@@ -1,344 +1,229 @@
-# SPEC: Stats Engine — Thống Kê Mô Tả XSMB + Candidate Filter v3.0
+# SPEC: Stats Engine — Thống Kê Mô Tả XSMB v3.0
 
 **Project:** `analysis-rbk-py`
 **Date:** 2026-06-21
-**Status:** Hoàn chỉnh — sẵn sàng code phase cuối
+**Status:** **Done** — Module 7, 8, candidate filters
 
 ## 1. Mục tiêu
 
-Thay thế Prediction Engine (dự đoán dựa trên ensemble lift ~1.02x, gần random) bằng **Stats Engine** — cung cấp:
-1. **Công cụ thống kê mô tả** cho người chơi chuyên tự phân tích
-2. **Candidate pool** từ multi-factor filtering, mỗi candidate có **lift-weighted score** + lý do thống kê
+Thay thế Prediction Engine (ensemble lift ~1.02x, gần random) bằng **Stats Engine** — cung cấp:
+1. Công cụ thống kê mô tả theo 7 module độc lập
+2. **Conditional Frequency** — thống kê loto ĐB hôm sau dựa trên loto ĐB hôm trước
+3. **RBK Cầu Crawler** — crawl dữ liệu soi cầu từ rongbachkim.net tự động
+4. Candidate pool multi-filter kèm lý do
 
-**Triết lý:** XSMB gần như perfectly random. Không model nào beat random >1.15x. Engine cung cấp data + lý do để người chơi tự quyết định.
-
----
-
-## 2. Nguyên tắc thiết kế
-
-1. **Raw data first** — mọi endpoint trả về số liệu gốc (count, prob, baseline)
-2. **Param hóa** — người dùng tự filter: min_lift, window, sort, limit
-3. **Baseline luôn đi kèm** — mọi metric có cột baseline random
-4. **Lý do cho mọi candidate** — không chỉ số, phải có lý do thống kê
-5. **Fast** — 1-2 SQL query tối ưu, cache hot data
-6. **Module hóa** — mỗi module độc lập
-7. **Backtest quality gate** — hit rate phải đo và báo cáo
+**Triết lý:** XSMB gần như perfectly random. Engine cung cấp data + lý do, không fake dự đoán.
 
 ---
 
-## 3. Kiến trúc
+## 2. Kiến trúc
 
 ```
-routers/stats.py              ← 1 router, mỗi module 1 endpoint
-services/stats_service.py      ← core logic (SQL + Python processing)
-services/candidate_service.py  ← candidate pool + scorer + backtest
+routers/stats.py              ← 1 router, mỗi module/endpoint 1 route
+services/stats_service.py      ← core logic (SQL + Python) cho module 1-7
+services/candidate_service.py  ← candidate pool builder (multi-filter)
+services/rbk_crawler.py        ← [NEW] crawl rongbachkim.net
 prediction/                    ← giữ nguyên code cũ (không xoá)
 ```
 
----
-
-## 4. Modules & Endpoints
-
-### Module 1: Pair Analytics
-
-#### GET /stats/pairs
-
-| Param | Default | Mô tả |
-|-------|---------|-------|
-| `type` | `same-day` | `same-day` / `lag-1` |
-| `min_lift` | 1.05 | Lift tối thiểu |
-| `min_occ` | 30 | Số lần xuất hiện tối thiểu |
-| `limit` | 50 | (max 500) |
-| `sort` | `lift` | `lift` / `count` / `prob` |
-| `from_date` | 2020-01-01 | |
-| `to_date` | latest | |
+Thêm file mới:
+- `services/rbk_crawler.py` — crawl rongbachkim + cache
+- `tests/test_rbk_crawler.py` — test crawl
 
 ---
 
-### Module 2: Gap & Max Cycle & Nhịp
+## 3. Modules
 
-| Endpoint | Mô tả |
-|----------|-------|
-| `GET /stats/gap?loto=88` | Chi tiết gap + max cycle + distribution |
-| `GET /stats/gap/hot-cold` | Hot/cold ranking 100 loto |
-| `GET /stats/gap/nhip?loto=88` | Tần suất nhịp + vị trí giải |
-| `GET /stats/gap/max-cycle` | Top loto gần max cycle nhất |
-
----
-
-### Module 3: Digit + Đầu Đề Cycle
-
-| Endpoint | Mô tả |
-|----------|-------|
-| `GET /stats/digits` | Phân phối đầu/đít |
-| `GET /stats/digits/de-dau` | Chu kỳ đầu đề (giống /chu-ky-dac-biet) |
+### Module 1-6: Giữ nguyên từ v2.0
+- Module 1: Pair Analytics (same-day + lag-1)
+- Module 2: Gap & Max Cycle & Nhịp
+- Module 3: Digit Distribution + Đầu Đề Cycle
+- Module 4: Lô Rơi
+- Module 5: Calendar Stats
+- Module 6: Max Dàn Cùng Về
 
 ---
 
-### Module 4: Lô Rơi
+### Module 7: Conditional Frequency — Thống kê ĐB theo loto ĐB hôm trước
 
-| Param | Default |
-|-------|---------|
-| `loto` | (opt) |
-| `de` | (opt) |
-| `window` | 3 |
-| `limit` | 20 |
+Lấy cảm hứng từ mketqua.net/giai-db-ngay-mai.
 
----
+#### API
 
-### Module 5: Calendar
-
-| Endpoint | Mô tả |
-|----------|-------|
-| `GET /stats/calendar` | Thống kê theo thứ/ngày/tháng |
-| `GET /stats/calendar/loto-theo-db` | Sau ĐB X → loto Y nào |
-| `GET /stats/calendar/loto-theo-loto` | Sau loto X → loto Y nào |
-
----
-
-### Module 6: Max Dàn
-
-| Param | Default |
-|-------|---------|
-| `size` | 3 |
-| `min_co_occur` | 20 |
-| `limit` | 20 |
-
----
-
-### Module 7: Candidate Pool (Multi-Factor)
-
-#### GET /stats/candidates
-
-| Param | Default | Mô tả |
-|-------|---------|-------|
-| `target_date` | (opt) | Mặc định ngày mai |
-| `top` | 20 | Số candidate |
-| `min_filters` | 1 | Filters tối thiểu **(default giảm từ 2→1)** |
-| `sort` | `score` | `score` / `filters` / `loto` |
-| `include_reasons` | true | |
-| `include_pair_detail` | false | |
-
-#### 7.1 Filters
-
-| Filter | Threshold | Score contribution |
-|--------|-----------|-------------------|
-| `lag-1 pair` | lift ≥ 1.10 | `(lift - 1) × 2` — max 0.5 |
-| `same-day pair` | lift ≥ 1.10 | `(lift - 1) × 2` — max 0.5 |
-| `max-cycle` | pct_of_max ≥ 70% | `pct / 100` — 0.7 to 1.0 |
-| `calendar bias` | lift ≥ 1.05 | `(lift - 1) × 3` — max 0.5 |
-| `lo-roi` | lift > 1.0 | `(lift - 1) × 1` — unbounded |
-
-#### 7.2 Scorer: Lift-Weighted Score
-
-**Vấn đề v2:** 12 loto cùng có 4 filters, không phân biệt được cái nào mạnh hơn.
-
-**Fix v3:** Mỗi filter đóng góp score dựa trên độ mạnh thực tế của signal:
-
-```python
-def _compute_score(filters_matched: dict[str, dict]) -> float:
-    score = 0.0
-    score += filters_matched.get("lag-1", {}).get("score_contribution", 0)
-    score += filters_matched.get("same-day", {}).get("score_contribution", 0)
-    score += filters_matched.get("max-cycle", {}).get("score_contribution", 0)
-    score += filters_matched.get("calendar", {}).get("score_contribution", 0)
-    score += filters_matched.get("lo-roi", {}).get("score_contribution", 0)
-    return round(score, 2)
+```
+GET /stats/conditional-frequency
 ```
 
-**Score contribution từng filter:**
+| Param | Default | Mô tả |
+|-------|---------|-------|
+| `db_loto` | (required) | Loto ĐB hôm nay (00-99) |
+| `target_weekday` | (optional) | Thứ cần filter (0=CN, 1=T2, ...) |
+| `min_occ` | 2 | Số lần xuất hiện tối thiểu |
+| `limit` | 30 | Số kết quả |
+| `sort` | `count` | `count` / `lift` |
 
-| Filter | Công thức | Range | Ví dụ |
-|--------|-----------|-------|-------|
-| lag-1 | `(lift - 1) × 2` (cap 0.5) | 0.0–0.5 | lift 1.19 → 0.38 |
-| same-day | `(lift - 1) × 2` (cap 0.5) | 0.0–0.5 | lift 1.24 → 0.48 |
-| max-cycle | `pct / 100` | 0.0–1.0 | 75% → 0.75 |
-| calendar | `(lift - 1) × 3` (cap 0.5) | 0.0–0.5 | lift 1.08 → 0.24 |
-| lo-roi | `(lift - 1) × 1` | 0.0–unbounded | lift 2.74 → **1.74** |
-
-**Lý do scale khác nhau:**
-- **Lo-roi** ×1 không cap — vì lift có thể rất cao (2.74x), cần phản ánh đúng signal mạnh
-- **Lag-1** ×2 cap 0.5 — vì lift dao động 1.10–1.30, cần scale lên để so sánh được
-- **Max-cycle** không cap — 70%→0.7, 95%→0.95, gần tới max cycle là signal mạnh nhất
-- **Calendar** ×3 cap 0.5 — lift thường rất thấp (1.05–1.15), cần boost để không bị át
-
-#### 7.3 Sort
-
-- Mặc định: score giảm dần
-- `sort=filters`: số filters matched giảm dần (giống v2)
-- `sort=loto`: alphabet
-
-#### 7.4 Response
+#### Response
 
 ```json
 {
-  "endpoint": "candidates",
-  "target_date": "2026-06-22",
-  "as_of_date": "2026-06-20",
-  "disclaimer": "Stats-based candidate pool. Lift-weighted score. Không phải dự đoán.",
-  "context": {
-    "yesterday_lotos": ["03","05","06",...],
-    "yesterday_de": "60",
-    "target_weekday": "Chủ nhật"
+  "module": "conditional-frequency",
+  "db_loto": "60",
+  "target_weekday": null,
+  "total_samples": 12,
+  "params": {...},
+  "loto_frequency": [
+    {"loto": "81", "count": 5, "pct": 15.6, "baseline": 10.0, "lift": 1.56},
+    {"loto": "35", "count": 5, "pct": 15.6, "baseline": 10.0, "lift": 1.56}
+  ],
+  "cham_stats": {
+    "dau": [{"digit": "8", "count": 15, "pct": 23.4}, ...],
+    "duoi": [{"digit": "1", "count": 16, "pct": 25.0}, ...],
+    "tong": [{"digit": "1", "count": 17, "pct": 26.6}, ...]
   },
-  "candidates": [
-    {
-      "loto": "07",
-      "score": 1.74,
-      "filters_matched": 1,
-      "score_breakdown": {
-        "lo-roi": 1.74
-      },
-      "reasons": [
-        "lô rơi: sau đề 60 loto 07 rơi 64.8% (lift 2.74x)"
-      ]
-    },
-    {
-      "loto": "00",
-      "score": 2.15,
-      "filters_matched": 4,
-      "score_breakdown": {
-        "lag-1": 0.38,
-        "same-day": 0.48,
-        "calendar": 0.24,
-        "lo-roi": 1.05
-      },
-      "reasons": [
-        "lag-1: 13 hôm qua → 00 có P=... (lift 1.19x)",
-        "same-day: (00,41) cùng về ... (lift 1.24x)",
-        "calendar: chủ nhật loto 00 tần suất ... (lift 1.08x)",
-        "lô rơi: sau đề 60 loto 00 rơi ... (lift 2.05x)"
-      ]
-    },
-    {
-      "loto": "88",
-      "score": 1.95,
-      "filters_matched": 4,
-      "score_breakdown": {
-        "lag-1": 0.42,
-        "same-day": 0.38,
-        "max-cycle": 0.75,
-        "calendar": 0.24,
-        "lo-roi": 0.16
-      },
-      "reasons": [
-        "lag-1: 79 hôm qua → 88 có P=... (lift 1.21x)",
-        "same-day: (88,89) cùng về ... (lift 1.19x)",
-        "max-cycle: current gap 15/20 ngày (75%)",
-        "calendar: chủ nhật loto 88 tần suất ... (lift 1.08x)",
-        "lô rơi: sau đề 60 loto 88 rơi ... (lift 1.16x)"
-      ]
-    }
-  ],
-  "filters_applied": [
-    {"name": "lag-1 pair", "min_lift": 1.10, "matched": 15},
-    {"name": "same-day pair", "min_lift": 1.10, "matched": 12},
-    {"name": "max-cycle", "min_pct": 70, "matched": 5},
-    {"name": "calendar bias", "min_lift": 1.05, "matched": 18},
-    {"name": "lo-roi", "window": 3, "matched": 8}
-  ],
-  "meta": {
-    "total_candidates": 20,
-    "total_lotos_scanned": 58,
-    "filters_run": 5,
-    "avg_filters_per_candidate": 2.3,
-    "avg_score": 1.45,
-    "scoring_method": "lift-weighted (mỗi filter scale khác nhau)",
-    "query_time_ms": 120
-  }
-}
-```
-
-#### 7.5 min_filters default = 1
-
-Cho phép loto chỉ match 1 filter nhưng score rất cao (vd: lô rơi lift 2.74x) vẫn vào candidate pool. Trước đây min_filters=2 sẽ loại bỏ 07 dù signal rất mạnh.
-
----
-
-### Module 8: Backtest
-
-#### POST /stats/candidates/backtest
-
-| Param | Default |
-|-------|---------|
-| `days` | 90 |
-| `top` | 20 |
-| `min_filters` | 1 |
-
-Chạy với cả min_filters=1,2,3 so sánh với random baseline.
-
-**Response mở rộng:**
-```json
-{
-  "module": "candidates",
-  "type": "backtest",
-  "results": [
-    {
-      "model": "candidates (min_filters=1, sort=score)",
-      "hit_rate@20": 0.998,
-      "recall@20": 0.206,
-      "lift": 1.03
-    },
-    {
-      "model": "candidates (min_filters=2, sort=filters)",
-      "hit_rate@20": 0.997,
-      "recall@20": 0.204,
-      "lift": 1.02
-    },
-    {
-      "model": "candidates (min_filters=3, sort=filters)",
-      "hit_rate@20": 0.995,
-      "recall@20": 0.195,
-      "lift": 0.98
-    },
-    {"model": "random_baseline", "hit_rate@20": 0.997, "recall@20": 0.200, "lift": 1.0}
+  "history": [
+    {"date": "2026-04-10", "db": "54860", "next_db": "04204", "next_loto": "04"},
+    ...
   ]
 }
 ```
 
----
+#### SQL
 
-## 5. Optimizations
-
-### 5.1 Cache `_cached_all_loto_hits`
-- `@lru_cache(maxsize=1)`
-- `clear_stats_cache()` gọi từ scheduler import + refresh-views + clear_feature_cache
-- ✅ Applied
-
-### 5.2 elif → 2 if trong lag-1 và same-day matches
-- ✅ Applied
-
-### 5.3 Lo-roi sliding window
-- O(n×w) → O(n)
-- ✅ Applied
-
-### 5.4 Candidate performance >1000ms → auto warn
-- ✅ Applied
-
----
-
-## 6. Implementation Status
-
-| Module | Endpoint | Status |
-|--------|----------|--------|
-| 1 | `/stats/pairs` | Done |
-| 2 | `/stats/gap/*` | Done |
-| 3 | `/stats/digits/*` | Done |
-| 4 | `/stats/lo-roi` | Done |
-| 5 | `/stats/calendar/*` | Done |
-| 6 | `/stats/max-dan` | Done |
-| 7 | `/stats/candidates` | **Cần update scorer** |
-| 8 | `/stats/candidates/backtest` | **Cần update** |
+```sql
+WITH db_pairs AS (
+    SELECT
+        cur.draw_date,
+        cur.last_two AS cur_db_loto,
+        LEAD(cur.last_two) OVER (ORDER BY cur.draw_date) AS next_db_loto,
+        LEAD(d.draw_date) OVER (ORDER BY cur.draw_date) AS next_date
+    FROM draws d
+    JOIN prizes cur ON cur.draw_id = d.id
+    WHERE d.region = 'MB' AND cur.prize_level = 'DB'
+)
+SELECT next_db_loto, COUNT(*) AS occurrences
+FROM db_pairs
+WHERE cur_db_loto = %s
+GROUP BY next_db_loto
+HAVING COUNT(*) >= %s
+ORDER BY COUNT(*) DESC;
+```
 
 ---
 
-## 7. Thay đổi từ v2.1 → v3.0
+### Module 8 (NEW): RBK Cầu Crawler
 
-| Thay đổi | Lý do |
-|----------|-------|
-| **Scorer mới**: lift-weighted thay vì đếm filters | 12 loto cùng 4 filters không phân biệt được |
-| **score_breakdown** trong candidate response | User thấy điểm đến từ đâu |
-| **min_filters default = 1** | Lot 07 (lo-roi lift 2.74x) chỉ 1 filter nhưng signal cực mạnh |
-| **sort param**: `score` / `filters` / `loto` | Linh hoạt cho người chơi |
-| **score formula cho mỗi filter scale khác nhau** | Vì mỗi filter có phân phối lift khác nhau |
-| **avg_score** trong meta | So sánh quality giữa các ngày |
+#### Mô tả
+
+Tích hợp dữ liệu soi cầu từ rongbachkim.net vào engine. Crawl tự động, cache kết quả, expose qua API.
+
+**Lý do:** Không thể tự dựng cầu từ DB vì thuật toán cầu của rongbachkim dựa trên vị trí các chữ số trong bảng kết quả, rất phức tạp và không open-source.
+
+#### Cơ chế crawl
+
+Dùng Python `requests` + regex:
+1. Gửi request đến `https://rongbachkim.net/soicau.html?submit=1&setmode=full&exactlimit=0&limit=LIMIT&ngay=DD/MM/YYYY&nhay=1&lon=1`
+2. Parse HTML response:
+   - Tổng số cầu: `tìm được <span>N</span> cầu`
+   - Danh sách số có cầu: từ các thẻ `<a class="a_cau">XX</a>`
+   - Thống kê cầu lặp: từ bảng `<td class=col1>XX,YY</td><td class=col2>N cầu</td>`
+   - Cặp nhiều cầu nhất: từ text `Cặp số có nhiều cầu nhất là XX,YY: N cầu`
+   - Cầu >5 ngày: `Trong đó có N cầu dài trên 5 ngày`
+   - Cặp số khác nhau: `Cầu xuất hiện tại N cặp số khác nhau, trong đó có M cặp có cầu chạy hơn 5 ngày`
+
+#### Cache
+
+- Lưu file JSON theo ngày ở `/tmp/rbk_cache/YYYY-MM-DD_LIMIT.json`
+- Cache TTL: 1 ngày
+- Tự động refresh khi có request
+
+#### API
+
+```
+GET /stats/rbk-cau?limit=5
+```
+
+| Param | Default | Mô tả |
+|-------|---------|-------|
+| `date` | today | Ngày cần xem cầu (YYYY-MM-DD) |
+| `limit` | 5 | Độ dài cầu tối thiểu (1-9) |
+| `min_cau` | 1 | Chỉ lấy cặp có >= N cầu |
+
+#### Response
+
+```json
+{
+  "module": "rbk-cau",
+  "date": "2026-06-20",
+  "limit": 5,
+  "total_cau": 82,
+  "cau_tren_5ngay": 27,
+  "cap_so_khac_nhau": 37,
+  "cap_tren_5ngay": 16,
+  "cap_nhieu_cau_nhat": "01,10: 6 cầu",
+  "cau_lap": [
+    {"pair": "01,10", "count": 6},
+    {"pair": "45,54", "count": 6},
+    {"pair": "05,50", "count": 5}
+  ],
+  "unique_numbers": ["01", "05", "06", ...],
+  "recommended": ["01", "10", "45", "54", ...],
+  "meta": {
+    "crawl_time_ms": 850,
+    "cached": false
+  }
+}
+```
+
+#### Tính năng recommend
+
+Từ thống kê cầu lặp, recommend các số có nhiều cầu nhất:
+- Filter: chỉ lấy cặp có >= `min_cau` cầu
+- Expand từng cặp thành các số riêng lẻ
+- Sort theo số cầu giảm dần
+- Deduplicate
+
+#### Backtest results (30 ngày gần nhất)
+
+Cần chạy backtest với các mức limit 1/3/5/7/9 để xác định sweet spot. Expected:
+- Limit càng cao → cầu càng chất lượng → ít số hơn → precision cao hơn
+- Limit càng thấp → càng nhiều số → recall cao hơn
+- Dùng để chọn limit tối ưu cho candidate pool
+
+---
+
+## 4. Candidate Pool (update)
+
+Thêm 2 filters mới:
+
+| Filter | Mô tả | Nguồn | Score |
+|--------|-------|-------|-------|
+| `conditional-frequency` | Loto hay về khi ĐB hôm trước = X | Module 7 (DB) | `(lift−1)×2` cap 0.5 |
+| `rbk-cau` | Loto có nhiều cầu RBK | Module 8 (crawl) | `weight×0.5` cap 0.5 |
+
+---
+
+## 5. Implementation Plan
+
+### Phase 1 — Module 7: Conditional Frequency ✅
+- [x] Query + `get_conditional_frequency()`
+- [x] `GET /stats/conditional-frequency`
+
+### Phase 2 — Module 8: RBK Crawler ✅
+- [x] `services/rbk_crawler.py` — crawl + parse + cache
+- [x] `GET /stats/rbk-cau`
+- [x] `tests/test_rbk_crawler.py`
+
+### Phase 3 — Candidate Pool ✅
+- [x] Filters `conditional-frequency`, `rbk-cau`
+
+### Phase 4 — Module 1-6 ✅ (từ v2/v4)
+
+---
+
+## 6. Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| v1.0 | 2026-06-20 | Initial prediction engine spec |
+| v2.0 | 2026-06-21 | Convert to stats + candidate pool |
+| v3.0 | 2026-06-21 | Thêm Module 7 (Conditional Frequency), Module 8 (RBK Crawler) |

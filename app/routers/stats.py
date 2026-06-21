@@ -8,8 +8,10 @@ from app.services.candidate_service import (
     evaluate_candidates,
     run_candidates_backtest,
 )
+from app.services.rbk_crawler import get_rbk_cau
 from app.services.stats_service import (
     get_calendar,
+    get_conditional_frequency,
     get_de_dau,
     get_digits,
     get_gap_detail,
@@ -137,6 +139,32 @@ def calendar(
     window: int = Query(default=0, ge=0),
 ):
     return get_calendar(by=by, loto=loto, window=window)
+
+
+@router.get("/conditional-frequency")
+def conditional_frequency(
+    db_loto: str = Query(..., min_length=2, max_length=2),
+    target_weekday: Optional[int] = Query(default=None, ge=0, le=6),
+    min_occ: int = Query(default=2, ge=1),
+    limit: int = Query(default=30, ge=1, le=100),
+    sort: Literal["count", "lift"] = Query(default="count"),
+):
+    return get_conditional_frequency(
+        db_loto=db_loto,
+        target_weekday=target_weekday,
+        min_occ=min_occ,
+        limit=limit,
+        sort=sort,
+    )
+
+
+@router.get("/rbk-cau")
+def rbk_cau(
+    date: Optional[str] = Query(default=None),
+    limit: int = Query(default=5, ge=1, le=9),
+    min_cau: int = Query(default=1, ge=1),
+):
+    return get_rbk_cau(date_str=date, limit=limit, min_cau=min_cau)
 
 
 @router.get("/candidates")

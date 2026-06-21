@@ -13,6 +13,7 @@ from app.services.stats_service import (
     WEEKDAYS_VI,
     approaching_max_cycle_matches,
     calendar_bias_matches,
+    conditional_frequency_matches,
     de_calendar_matches,
     de_lag1_matches,
     de_loto_boost_matches,
@@ -20,6 +21,7 @@ from app.services.stats_service import (
     get_lo_roi,
     get_pairs,
 )
+from app.services.rbk_crawler import rbk_cau_loto_matches
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,10 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return min((lift - 1) * 3, 0.5)
     if filter_key == "de-loto-boost":
         return min((lift - 1) * 2, 0.3)
+    if filter_key == "conditional-frequency":
+        return min((lift - 1) * 2, 0.5)
+    if filter_key == "rbk-cau":
+        return min(float(detail.get("weight", 0)) * 0.5, 0.5)
     return 0.0
 
 
@@ -207,6 +213,25 @@ def _de_loto_boost_filter_matches(yesterday_lotos: set[str]) -> list[FilterMatch
     )
 
 
+def _conditional_frequency_filter_matches(yesterday_de: str, weekday: int) -> list[FilterMatch]:
+    return _dict_to_matches(
+        conditional_frequency_matches(yesterday_de, target_weekday=weekday, min_lift=1.05),
+        lambda lot, info: (
+            f"conditional-frequency: sau ĐB {info['db_loto']} → {lot} "
+            f"{info['count']}/{info['total_samples']} ({info['pct']:.1f}%, lift {info['lift']}x)"
+        ),
+    )
+
+
+def _rbk_cau_filter_matches(as_of_date: str) -> list[FilterMatch]:
+    return _dict_to_matches(
+        rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1),
+        lambda lot, info: (
+            f"rbk-cau: {lot} có {info['cau_count']} cầu RBK (weight {info['weight']})"
+        ),
+    )
+
+
 def _de_tiebreak(candidate: dict) -> int:
     return sum(DE_FILTER_PRIORITY.get(k, 0) for k in candidate.get("score_breakdown", {}))
 
@@ -285,13 +310,24 @@ def _build_from_filters(
     return candidates, filters_applied, loto_filters
 
 
-def _loto_filter_defs(yesterday_lotos: set[str], yesterday_de: str, weekday: int) -> list[dict]:
+def _loto_filter_defs(
+    yesterday_lotos: set[str],
+    yesterday_de: str,
+    weekday: int,
+    as_of_date: str,
+) -> list[dict]:
     return [
         {"key": "lag-1", "min_lift": 1.10, "fn": lambda: _lag1_matches(yesterday_lotos)},
         {"key": "same-day", "min_lift": 1.10, "fn": lambda: _same_day_matches(yesterday_lotos)},
         {"key": "max-cycle", "min_pct": 70, "fn": lambda: _max_cycle_matches()},
         {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
         {"key": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
+        {
+            "key": "conditional-frequency",
+            "min_lift": 1.05,
+            "fn": lambda: _conditional_frequency_filter_matches(yesterday_de, weekday),
+        },
+        {"key": "rbk-cau", "limit": 5, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
     ]
 
 
@@ -335,7 +371,7 @@ def build_candidates(
     weekday = target_dt.weekday()
 
     if target == "loto":
-        filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday)
+        filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday, as_of_str)
     else:
         filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday)
 
@@ -580,9 +616,12 @@ def evaluate_candidates(
 ) -> dict:
     start_ms = time.perf_counter()
     target_dt = date.fromisoformat(target_date)
-    actual_loto = actual_values_for_date(target_dt, TARGET_LOTO)
-    actual_de = actual_values_for_date(target_dt, TARGET_DE)
-    if not actual_loto and not actual_de:
+
+    if target == "loto":
+        actual = actual_values_for_date(target_dt, TARGET_LOTO)
+    else:
+        actual = actual_values_for_date(target_dt, TARGET_DE)
+    if not actual:
         raise ValueError(f"No draw data for target_date {target_date}")
 
     prediction = build_candidates(
@@ -594,32 +633,29 @@ def evaluate_candidates(
         include_reasons=False,
     )
     preds = [c["loto"] for c in prediction["candidates"]]
-    de_actual = next(iter(actual_de)) if actual_de else None
-    actual_payload = {
-        "de": de_actual,
-        "loto": sorted(actual_loto),
-    }
 
-    if target == "loto":
-        hits = sorted(set(preds) & actual_loto)
+    actual_payload: dict = {}
+    if target == "de":
+        de_val = next(iter(actual))
+        actual_payload["de"] = de_val
+        hit = de_val in preds
+        metrics = {
+            "primary_metric": "hit_rate",
+            "hit": hit,
+            "actual_de": de_val,
+            "rank": preds.index(de_val) + 1 if hit else None,
+            "top_k": len(preds),
+        }
+    else:
+        actual_payload["loto"] = sorted(actual)
+        hits = sorted(set(preds) & actual)
         metrics = {
             "primary_metric": "recall",
             "hit_day": bool(hits),
             "hits": hits,
             "hits_count": len(hits),
             "top_k": len(preds),
-            "recall": round(len(hits) / len(actual_loto), 3) if actual_loto else 0.0,
-            "hit_rate": 1.0 if hits else 0.0,
-        }
-    else:
-        hit = bool(de_actual and de_actual in preds)
-        metrics = {
-            "primary_metric": "hit_rate",
-            "hit": hit,
-            "actual_de": de_actual,
-            "rank": preds.index(de_actual) + 1 if hit else None,
-            "top_k": len(preds),
-            "hit_rate": 1.0 if hit else 0.0,
+            "recall": round(len(hits) / len(actual), 3) if actual else 0.0,
         }
 
     elapsed_ms = int((time.perf_counter() - start_ms) * 1000)

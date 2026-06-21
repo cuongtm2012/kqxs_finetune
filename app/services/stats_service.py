@@ -1297,6 +1297,150 @@ def de_loto_boost_matches(yesterday_lotos: set[str], min_lift: float = 1.05) -> 
     return matches
 
 
+CondFreqSort = Literal["count", "lift"]
+
+
+def get_conditional_frequency(
+    db_loto: str,
+    target_weekday: Optional[int] = None,
+    min_occ: int = 2,
+    limit: int = 30,
+    sort: CondFreqSort = "count",
+    history_limit: int = 20,
+) -> dict:
+    start_ms = time.perf_counter()
+    rows = fetch_all(
+        """
+        SELECT d.draw_date::text AS draw_date, p.last_two, p.number
+        FROM draws d JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB' AND p.prize_level = 'DB'
+        ORDER BY d.draw_date
+        """
+    )
+    pairs: list[dict] = []
+    for i in range(len(rows) - 1):
+        cur = rows[i]
+        nxt = rows[i + 1]
+        if cur["last_two"] != db_loto:
+            continue
+        next_dt = date.fromisoformat(nxt["draw_date"])
+        if target_weekday is not None and next_dt.weekday() != target_weekday:
+            continue
+        pairs.append(
+            {
+                "date": cur["draw_date"],
+                "db": cur["number"] or cur["last_two"],
+                "next_date": nxt["draw_date"],
+                "next_db": nxt["number"] or nxt["last_two"],
+                "next_loto": nxt["last_two"],
+            }
+        )
+
+    total_samples = len(pairs)
+    loto_counts: dict[str, int] = defaultdict(int)
+    dau_counts: dict[str, int] = defaultdict(int)
+    duoi_counts: dict[str, int] = defaultdict(int)
+    tong_counts: dict[str, int] = defaultdict(int)
+
+    for pair in pairs:
+        lot = pair["next_loto"]
+        loto_counts[lot] += 1
+        if len(lot) >= 2:
+            dau = lot[0]
+            duoi = lot[1]
+            tong = str((int(lot[0]) + int(lot[1])) % 10)
+            dau_counts[dau] += 1
+            duoi_counts[duoi] += 1
+            tong_counts[tong] += 1
+
+    loto_frequency: list[dict] = []
+    baseline_pct = 1.0
+    for lot, count in loto_counts.items():
+        if count < min_occ:
+            continue
+        pct = count / total_samples * 100 if total_samples else 0.0
+        lift = pct / baseline_pct if baseline_pct > 0 else 0.0
+        loto_frequency.append(
+            {
+                "loto": lot,
+                "count": count,
+                "pct": round(pct, 1),
+                "baseline": baseline_pct,
+                "lift": _round_lift(lift),
+            }
+        )
+
+    if sort == "lift":
+        loto_frequency.sort(key=lambda r: (-r["lift"], -r["count"]))
+    else:
+        loto_frequency.sort(key=lambda r: (-r["count"], -r["lift"]))
+    loto_frequency = loto_frequency[:limit]
+
+    def _digit_stats(counts: dict[str, int]) -> list[dict]:
+        if total_samples == 0:
+            return []
+        stats = []
+        for digit in range(10):
+            d = str(digit)
+            c = counts.get(d, 0)
+            if c == 0:
+                continue
+            stats.append(
+                {
+                    "digit": d,
+                    "count": c,
+                    "pct": round(c / total_samples * 100, 1),
+                }
+            )
+        stats.sort(key=lambda r: -r["count"])
+        return stats
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "conditional-frequency",
+        "db_loto": db_loto,
+        "target_weekday": target_weekday,
+        "total_samples": total_samples,
+        "params": {
+            "db_loto": db_loto,
+            "target_weekday": target_weekday,
+            "min_occ": min_occ,
+            "limit": limit,
+            "sort": sort,
+        },
+        "loto_frequency": loto_frequency,
+        "cham_stats": {
+            "dau": _digit_stats(dau_counts),
+            "duoi": _digit_stats(duoi_counts),
+            "tong": _digit_stats(tong_counts),
+        },
+        "history": pairs[-history_limit:],
+        "meta": {"query_time_ms": elapsed_ms},
+    }
+
+
+def conditional_frequency_matches(
+    db_loto: str,
+    target_weekday: Optional[int] = None,
+    min_occ: int = 2,
+    min_lift: float = 1.05,
+) -> dict[str, dict]:
+    if not db_loto:
+        return {}
+    result = get_conditional_frequency(
+        db_loto=db_loto,
+        target_weekday=target_weekday,
+        min_occ=min_occ,
+        limit=100,
+        sort="lift",
+    )
+    matches: dict[str, dict] = {}
+    for row in result["loto_frequency"]:
+        if row["lift"] >= min_lift:
+            matches[row["loto"]] = {**row, "db_loto": db_loto, "total_samples": result["total_samples"]}
+    return matches
+
+
 def approaching_max_cycle_matches(min_pct: int = 70) -> dict[str, dict]:
     draw_dates = _draw_dates()
     date_to_idx = _date_index(draw_dates)
