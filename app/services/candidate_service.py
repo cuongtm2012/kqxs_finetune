@@ -3,16 +3,20 @@ import random
 import time
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from app.db import fetch_all
-from app.prediction.constants import TARGET_LOTO
+from app.prediction.constants import DEFAULT_TOP, TARGET_DE, TARGET_LOTO
 from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
 from app.services.stats_service import (
     CANDIDATES_DISCLAIMER,
     WEEKDAYS_VI,
     approaching_max_cycle_matches,
     calendar_bias_matches,
+    de_calendar_matches,
+    de_lag1_matches,
+    de_loto_boost_matches,
+    de_max_cycle_matches,
     get_day_context,
     get_lo_roi,
     get_pairs,
@@ -21,28 +25,29 @@ from app.services.stats_service import (
 logger = logging.getLogger(__name__)
 
 CandidateSort = Literal["score", "filters", "loto"]
+CandidateTarget = Literal["loto", "de"]
 FilterMatch = tuple[str, str, Optional[dict]]
 
-FILTER_KEYS = {
-    "lag-1 pair": "lag-1",
-    "same-day pair": "same-day",
-    "max-cycle": "max-cycle",
-    "calendar bias": "calendar",
-    "lo-roi": "lo-roi",
-}
+DE_TARGET_WARNING = (
+    "Đề chỉ 1 sample/ngày — noise cao. Backtest thường dưới random. "
+    "Chỉ dùng tham khảo, không kỳ vọng beat baseline >12%."
+)
 
 
-def _score_contribution(filter_name: str, detail: dict) -> float:
-    key = FILTER_KEYS[filter_name]
+def _score_contribution(filter_key: str, detail: dict) -> float:
     lift = float(detail.get("lift", 1))
-    if key in ("lag-1", "same-day"):
+    if filter_key in ("lag-1", "same-day"):
         return min((lift - 1) * 2, 0.5)
-    if key == "max-cycle":
+    if filter_key in ("max-cycle", "de-max-cycle"):
         return detail.get("pct_of_max", 0) / 100.0
-    if key == "calendar":
+    if filter_key in ("calendar", "de-calendar"):
         return min((lift - 1) * 3, 0.5)
-    if key == "lo-roi":
+    if filter_key == "lo-roi":
         return (lift - 1) * 1
+    if filter_key == "de-lag1":
+        return min((lift - 1) * 3, 0.5)
+    if filter_key == "de-loto-boost":
+        return min((lift - 1) * 2, 0.3)
     return 0.0
 
 
@@ -157,6 +162,53 @@ def _lo_roi_matches(yesterday_de: str, window: int = 3) -> list[FilterMatch]:
     return matches
 
 
+def _dict_to_matches(
+    data: dict[str, dict],
+    reason_fn: Callable[[str, dict], str],
+) -> list[FilterMatch]:
+    return [(key, reason_fn(key, info), info) for key, info in data.items()]
+
+
+def _de_lag1_filter_matches(yesterday_de: str) -> list[FilterMatch]:
+    return _dict_to_matches(
+        de_lag1_matches(yesterday_de, min_lift=1.05),
+        lambda de_val, info: (
+            f"de-lag1: đề {info['from_de']} hôm qua → {de_val} có P={info['p_xy']:.1%} "
+            f"(lift {info['lift']}x)"
+        ),
+    )
+
+
+def _de_calendar_filter_matches(weekday: int) -> list[FilterMatch]:
+    return _dict_to_matches(
+        de_calendar_matches(weekday, min_lift=1.05),
+        lambda de_val, info: (
+            f"de-calendar: {info['weekday'].lower()} đề {de_val} tần suất {info['prob']:.1%} "
+            f"(lift {info['lift']}x)"
+        ),
+    )
+
+
+def _de_max_cycle_filter_matches() -> list[FilterMatch]:
+    return _dict_to_matches(
+        de_max_cycle_matches(min_pct=70),
+        lambda de_val, info: (
+            f"de-max-cycle: đề {de_val} gan {info['current_gap']}/{info['max_gap_hist']} ngày "
+            f"({info['pct_of_max']}%)"
+        ),
+    )
+
+
+def _de_loto_boost_filter_matches(yesterday_lotos: set[str]) -> list[FilterMatch]:
+    return _dict_to_matches(
+        de_loto_boost_matches(yesterday_lotos, min_lift=1.05),
+        lambda lot, info: (
+            f"de-loto-boost: loto {lot} về hôm qua, đề {lot} có P={info['prob']:.1%} "
+            f"(lift {info['lift']}x)"
+        ),
+    )
+
+
 def _sort_candidates(candidates: list[dict], sort: CandidateSort) -> list[dict]:
     if sort == "score":
         return sorted(candidates, key=lambda c: (-c["score"], c["loto"]))
@@ -165,40 +217,19 @@ def _sort_candidates(candidates: list[dict], sort: CandidateSort) -> list[dict]:
     return sorted(candidates, key=lambda c: c["loto"])
 
 
-def build_candidates(
-    target_date: Optional[str] = None,
-    top: int = 20,
-    min_filters: int = 1,
-    sort: CandidateSort = "score",
-    include_reasons: bool = True,
-    include_pair_detail: bool = False,
-) -> dict:
-    start_ms = time.perf_counter()
-    target_str, as_of_str = _resolve_dates(target_date)
-    target_dt = date.fromisoformat(target_str)
-
-    ctx = get_day_context(as_of_str)
-    if not ctx:
-        raise ValueError(f"No draw data for as_of_date {as_of_str}")
-
-    yesterday_lotos = ctx["loto_set"]
-    yesterday_de = ctx["de"]
-    weekday = target_dt.weekday()
-
-    filter_defs = [
-        {"name": "lag-1 pair", "min_lift": 1.10, "fn": lambda: _lag1_matches(yesterday_lotos)},
-        {"name": "same-day pair", "min_lift": 1.10, "fn": lambda: _same_day_matches(yesterday_lotos)},
-        {"name": "max-cycle", "min_pct": 70, "fn": lambda: _max_cycle_matches()},
-        {"name": "calendar bias", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
-        {"name": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
-    ]
-
+def _build_from_filters(
+    filter_defs: list[dict],
+    min_filters: int,
+    sort: CandidateSort,
+    top: int,
+    include_reasons: bool,
+    include_pair_detail: bool,
+) -> tuple[list[dict], list[dict], dict[str, dict]]:
     loto_filters: dict[str, dict[str, dict]] = defaultdict(dict)
     filters_applied = []
 
     for filter_def in filter_defs:
-        filter_name = filter_def["name"]
-        filter_key = FILTER_KEYS[filter_name]
+        filter_key = filter_def["key"]
         matched = filter_def["fn"]()
         per_filter: dict[str, FilterMatch] = {}
         for lot, reason, detail in matched:
@@ -208,13 +239,13 @@ def build_candidates(
         filter_matches = list(per_filter.values())
         filters_applied.append(
             {
-                "name": filter_name,
-                **{k: v for k, v in filter_def.items() if k not in ("name", "fn")},
+                "name": filter_key,
+                **{k: v for k, v in filter_def.items() if k not in ("key", "fn")},
                 "matched": len(filter_matches),
             }
         )
         for lot, reason, detail in filter_matches:
-            contribution = round(_score_contribution(filter_name, detail or {}), 2)
+            contribution = round(_score_contribution(filter_key, detail or {}), 2)
             loto_filters[lot][filter_key] = {
                 "reason": reason,
                 "score_contribution": contribution,
@@ -239,6 +270,67 @@ def build_candidates(
         candidates.append(entry)
 
     candidates = _sort_candidates(candidates, sort)[:top]
+    return candidates, filters_applied, loto_filters
+
+
+def _loto_filter_defs(yesterday_lotos: set[str], yesterday_de: str, weekday: int) -> list[dict]:
+    return [
+        {"key": "lag-1", "min_lift": 1.10, "fn": lambda: _lag1_matches(yesterday_lotos)},
+        {"key": "same-day", "min_lift": 1.10, "fn": lambda: _same_day_matches(yesterday_lotos)},
+        {"key": "max-cycle", "min_pct": 70, "fn": lambda: _max_cycle_matches()},
+        {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
+        {"key": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
+    ]
+
+
+def _de_filter_defs(yesterday_lotos: set[str], yesterday_de: str, weekday: int) -> list[dict]:
+    return [
+        {"key": "de-lag1", "min_lift": 1.05, "fn": lambda: _de_lag1_filter_matches(yesterday_de)},
+        {"key": "de-calendar", "min_lift": 1.05, "fn": lambda: _de_calendar_filter_matches(weekday)},
+        {"key": "de-max-cycle", "min_pct": 70, "fn": lambda: _de_max_cycle_filter_matches()},
+        {
+            "key": "de-loto-boost",
+            "min_lift": 1.05,
+            "fn": lambda: _de_loto_boost_filter_matches(yesterday_lotos),
+        },
+    ]
+
+
+def build_candidates(
+    target_date: Optional[str] = None,
+    top: Optional[int] = None,
+    min_filters: int = 1,
+    sort: CandidateSort = "score",
+    target: CandidateTarget = "loto",
+    include_reasons: bool = True,
+    include_pair_detail: bool = False,
+) -> dict:
+    top = top if top is not None else DEFAULT_TOP[target]
+    start_ms = time.perf_counter()
+    target_str, as_of_str = _resolve_dates(target_date)
+    target_dt = date.fromisoformat(target_str)
+
+    ctx = get_day_context(as_of_str)
+    if not ctx:
+        raise ValueError(f"No draw data for as_of_date {as_of_str}")
+
+    yesterday_lotos = ctx["loto_set"]
+    yesterday_de = ctx["de"]
+    weekday = target_dt.weekday()
+
+    if target == "loto":
+        filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday)
+    else:
+        filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday)
+
+    candidates, filters_applied, value_filters = _build_from_filters(
+        filter_defs,
+        min_filters,
+        sort,
+        top,
+        include_reasons,
+        include_pair_detail,
+    )
 
     avg_filters = (
         round(sum(c["filters_matched"] for c in candidates) / len(candidates), 1)
@@ -248,39 +340,59 @@ def build_candidates(
     avg_score = round(sum(c["score"] for c in candidates) / len(candidates), 2) if candidates else 0.0
     elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
     if elapsed_ms > 1000:
-        logger.warning("candidates query slow: %dms target_date=%s", elapsed_ms, target_str)
+        logger.warning(
+            "candidates query slow: %dms target=%s target_date=%s",
+            elapsed_ms,
+            target,
+            target_str,
+        )
+
+    context = {
+        "yesterday_lotos": sorted(yesterday_lotos),
+        "yesterday_de": yesterday_de,
+        "target_weekday": WEEKDAYS_VI[weekday],
+    }
+
+    meta = {
+        "total_candidates": len(candidates),
+        "target": target,
+        "filters_run": len(filter_defs),
+        "avg_filters_per_candidate": avg_filters,
+        "avg_score": avg_score,
+        "scoring_method": "lift-weighted",
+        "sort": sort,
+        "query_time_ms": elapsed_ms,
+    }
+    if target == "loto":
+        meta["total_lotos_scanned"] = len(value_filters)
+    else:
+        meta["total_de_scanned"] = len(value_filters)
+        meta["warning"] = DE_TARGET_WARNING
 
     return {
         "endpoint": "candidates",
+        "target": target,
         "target_date": target_str,
         "as_of_date": as_of_str,
         "disclaimer": CANDIDATES_DISCLAIMER,
-        "context": {
-            "yesterday_lotos": sorted(yesterday_lotos),
-            "yesterday_de": yesterday_de,
-            "target_weekday": WEEKDAYS_VI[weekday],
-        },
+        "context": context,
         "candidates": candidates,
         "filters_applied": filters_applied,
-        "meta": {
-            "total_candidates": len(candidates),
-            "total_lotos_scanned": len(loto_filters),
-            "filters_run": len(filter_defs),
-            "avg_filters_per_candidate": avg_filters,
-            "avg_score": avg_score,
-            "scoring_method": "lift-weighted (mỗi filter scale khác nhau)",
-            "sort": sort,
-            "query_time_ms": elapsed_ms,
-        },
+        "meta": meta,
     }
 
 
-def _evaluate_candidate_day(candidate_lotos: list[str], actual: set[str]) -> tuple[float, float]:
+def _evaluate_loto_day(candidate_lotos: list[str], actual: set[str]) -> tuple[float, float]:
     pred = set(candidate_lotos)
     overlap = len(pred & actual)
     hit = 1.0 if overlap > 0 else 0.0
     recall = overlap / len(actual) if actual else 0.0
     return hit, recall
+
+
+def _evaluate_single_day(candidates: list[str], actual: set[str]) -> tuple[float, float]:
+    hit = 1.0 if set(candidates) & actual else 0.0
+    return hit, hit
 
 
 def _random_baseline_loto(top_k: int, trials: int = 5000) -> tuple[float, float]:
@@ -289,13 +401,19 @@ def _random_baseline_loto(top_k: int, trials: int = 5000) -> tuple[float, float]
     for _ in range(trials):
         picked = {f"{v:02d}" for v in random.sample(range(100), top_k)}
         actual = {f"{v:02d}" for v in random.sample(range(100), 27)}
-        hit, recall = _evaluate_candidate_day(list(picked), actual)
+        hit, recall = _evaluate_loto_day(list(picked), actual)
         hit_sum += hit
         recall_sum += recall
     return hit_sum / trials, recall_sum / trials
 
 
+def _random_baseline_single(top_k: int, universe: int) -> tuple[float, float]:
+    rate = min(top_k, universe) / universe
+    return rate, rate
+
+
 def _backtest_config(
+    target: CandidateTarget,
     target_dates: list[date],
     top: int,
     min_filters: int,
@@ -313,17 +431,24 @@ def _backtest_config(
                 top=top,
                 min_filters=min_filters,
                 sort=sort,
+                target=target,
                 include_reasons=False,
             )
         except ValueError:
             continue
-        candidates = [c["loto"] for c in result["candidates"]]
-        if not candidates:
+
+        if target == "de":
+            candidates = [c["loto"] for c in result["candidates"]]
+            actual = actual_values_for_date(target_dt, TARGET_DE)
+            evaluate = _evaluate_single_day
+        else:
+            candidates = [c["loto"] for c in result["candidates"]]
+            actual = actual_values_for_date(target_dt, TARGET_LOTO)
+            evaluate = _evaluate_loto_day
+
+        if not candidates or not actual:
             continue
-        actual = actual_values_for_date(target_dt, TARGET_LOTO)
-        if not actual:
-            continue
-        hit, recall = _evaluate_candidate_day(candidates, actual)
+        hit, recall = evaluate(candidates, actual)
         hit_sum += hit
         recall_sum += recall
         evaluated += 1
@@ -336,9 +461,11 @@ def _backtest_config(
 
 def run_candidates_backtest(
     days: int = 90,
-    top: int = 20,
+    top: Optional[int] = None,
     min_filters: int = 1,
+    target: CandidateTarget = "loto",
 ) -> dict:
+    top = top if top is not None else DEFAULT_TOP[target]
     start_ms = time.perf_counter()
     rows = fetch_all(
         """
@@ -349,13 +476,16 @@ def run_candidates_backtest(
     )
     target_dates = [date.fromisoformat(r["d"]) for r in reversed(rows)]
 
-    rand_hit, rand_recall = _random_baseline_loto(top)
-    results = []
+    if target == "loto":
+        rand_hit, rand_recall = _random_baseline_loto(top)
+    else:
+        rand_hit, rand_recall = _random_baseline_single(top, 100)
 
+    results = []
     configs = sorted({min_filters, 1, 2, 3})
     for mf in configs:
         sort_mode: CandidateSort = "score" if mf == 1 else "filters"
-        stats = _backtest_config(target_dates, top, mf, sort_mode)
+        stats = _backtest_config(target, target_dates, top, mf, sort_mode)
         lift = stats["recall"] / rand_recall if rand_recall > 0 else 0.0
         results.append(
             {
@@ -377,14 +507,32 @@ def run_candidates_backtest(
     )
 
     elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
-    return {
+    warnings: list[str] = []
+    target_enabled = True
+    if target == "de":
+        best_lift = max(
+            (r["lift"] for r in results if r["model"] != "random_baseline"),
+            default=0.0,
+        )
+        if best_lift < 1.0:
+            target_enabled = False
+            warnings.append(
+                "de target disabled: backtest lift < 1.0 — kết quả dưới random baseline"
+            )
+
+    response = {
         "module": "candidates",
         "type": "backtest",
+        "target": target,
         "disclaimer": CANDIDATES_DISCLAIMER,
-        "params": {"days": days, "top": top, "min_filters": min_filters},
+        "params": {"days": days, "top": top, "min_filters": min_filters, "target": target},
         "results": results,
         "meta": {
             "query_time_ms": elapsed_ms,
             "date_range": [target_dates[0].isoformat(), target_dates[-1].isoformat()] if target_dates else [],
+            "target_enabled": target_enabled,
         },
     }
+    if warnings:
+        response["warnings"] = warnings
+    return response

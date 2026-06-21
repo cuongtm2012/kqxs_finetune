@@ -24,8 +24,9 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 class CandidatesBacktestRequest(BaseModel):
     days: int = Field(default=90, ge=1, le=365)
-    top: int = Field(default=20, ge=1, le=100)
+    top: Optional[int] = Field(default=None, ge=1, le=100)
     min_filters: int = Field(default=1, ge=1, le=8)
+    target: Literal["loto", "de"] = Field(default="loto")
 
 
 @router.get("/pairs")
@@ -137,9 +138,10 @@ def calendar(
 @router.get("/candidates")
 def candidates(
     target_date: Optional[str] = Query(default=None),
-    top: int = Query(default=20, ge=1, le=100),
+    top: Optional[int] = Query(default=None, ge=1, le=100),
     min_filters: int = Query(default=1, ge=1, le=8),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
+    target: Literal["loto", "de"] = Query(default="loto"),
     include_reasons: bool = Query(default=True),
     include_pair_detail: bool = Query(default=False),
 ):
@@ -149,6 +151,7 @@ def candidates(
             top=top,
             min_filters=min_filters,
             sort=sort,
+            target=target,
             include_reasons=include_reasons,
             include_pair_detail=include_pair_detail,
         )
@@ -162,6 +165,7 @@ def candidates_backtest(body: CandidatesBacktestRequest):
         days=body.days,
         top=body.top,
         min_filters=body.min_filters,
+        target=body.target,
     )
 
 

@@ -41,6 +41,8 @@ scripts/
   tune_ensemble_weights.py
   migrate_mongo_to_pg.py  # One-time Mongo → PG
 docs/
+  SPEC-stats-engine-v4.md     # Spec hiện tại (candidate loto + de)
+  SPEC-stats-engine-v3.md
   SPEC-stats-engine-v2.md
   SPEC-prediction-engine.md   # legacy
 ```
@@ -115,17 +117,21 @@ curl -X POST http://localhost:8081/analytics/refresh-views
 | GET | `/stats/calendar/loto-theo-db` | Loto hay về sau đề X |
 | GET | `/stats/calendar/loto-theo-loto` | Loto hay về sau loto X |
 | GET | `/stats/max-dan` | Dàn 3–5 số cùng về (`size`, `min_co_occur`) |
-| GET | `/stats/candidates` | **Candidate pool** multi-filter |
+| GET | `/stats/candidates` | Candidate pool (`target=loto\|de`, lift-weighted) |
+| POST | `/stats/candidates/backtest` | Backtest candidate vs random baseline |
 
 Query mẫu:
 
 ```bash
 curl "http://localhost:8081/stats/pairs?type=lag-1&min_lift=1.1&limit=20"
 curl "http://localhost:8081/stats/candidates?top=20&min_filters=2"
+curl "http://localhost:8081/stats/candidates?target=de"          # default top=10
+curl -X POST http://localhost:8081/stats/candidates/backtest \
+  -H 'Content-Type: application/json' -d '{"days":90,"target":"de"}'
 curl "http://localhost:8081/stats/max-dan?size=3&min_co_occur=20"
 ```
 
-Chi tiết: [docs/SPEC-stats-engine-v2.md](docs/SPEC-stats-engine-v2.md).
+Chi tiết: [docs/SPEC-stats-engine-v4.md](docs/SPEC-stats-engine-v4.md).
 
 ### Predictions (legacy — không mount)
 

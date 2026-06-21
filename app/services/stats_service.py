@@ -376,6 +376,7 @@ def _loto_summary(
 
 def clear_stats_cache() -> None:
     _cached_all_loto_hits.cache_clear()
+    _cached_de_slot_days.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -679,6 +680,7 @@ def _load_mb_days(window: int = 0) -> list[dict]:
             rec["de"] = loto
             rec["de_number"] = row["number"] or loto
             rec["de_dau"] = row["first_digit"] or (loto[0] if loto else "")
+            rec["de_dit"] = row["last_digit"] or (loto[1] if len(loto) >= 2 else "")
     return [by_date[k] for k in sorted(by_date.keys())]
 
 
@@ -1146,6 +1148,155 @@ def get_loto_theo_loto(
     }
 
 
+@lru_cache(maxsize=1)
+def _cached_de_slot_days() -> list[dict]:
+    rows = fetch_all(
+        """
+        SELECT d.draw_date::text AS draw_date, p.last_two AS de,
+               p.first_digit::text AS de_dau, p.last_digit::text AS de_dit
+        FROM draws d JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB' AND p.slot_index = 0
+        ORDER BY d.draw_date
+        """
+    )
+    result: list[dict] = []
+    for row in rows:
+        de = row["de"] or ""
+        de_dau = row["de_dau"] or (de[0] if de else "")
+        de_dit = row["de_dit"] or (de[1] if len(de) >= 2 else "")
+        result.append(
+            {
+                "draw_date": row["draw_date"],
+                "de": de,
+                "de_dau": de_dau,
+                "de_dit": de_dit,
+            }
+        )
+    return result
+
+
+def de_lag1_matches(yesterday_de: str, min_lift: float = 1.05) -> dict[str, dict]:
+    if not yesterday_de:
+        return {}
+    days = _cached_de_slot_days()
+    transitions: dict[str, int] = defaultdict(int)
+    total_from = 0
+    de_totals: dict[str, int] = defaultdict(int)
+    total_days = len(days)
+    for day in days:
+        de_totals[day["de"]] += 1
+    for i in range(len(days) - 1):
+        if days[i]["de"] == yesterday_de:
+            total_from += 1
+            transitions[days[i + 1]["de"]] += 1
+    if total_from == 0:
+        return {}
+
+    matches: dict[str, dict] = {}
+    for de_val, count in transitions.items():
+        p_xy = count / total_from
+        baseline = de_totals[de_val] / total_days if total_days else 0.0
+        lift = p_xy / baseline if baseline > 0 else 0.0
+        if lift >= min_lift:
+            matches[de_val] = {
+                "from_de": yesterday_de,
+                "de": de_val,
+                "occurrences": count,
+                "total_from": total_from,
+                "p_xy": _round_prob(p_xy),
+                "baseline": _round_prob(baseline),
+                "lift": _round_lift(lift),
+            }
+    return matches
+
+
+def de_calendar_matches(weekday: int, min_lift: float = 1.05) -> dict[str, dict]:
+    days = _cached_de_slot_days()
+    bucket_days = sum(
+        1 for day in days if date.fromisoformat(day["draw_date"]).weekday() == weekday
+    )
+    if bucket_days == 0:
+        return {}
+
+    de_bucket: dict[str, int] = defaultdict(int)
+    de_total: dict[str, int] = defaultdict(int)
+    total_days = len(days)
+    for day in days:
+        de_val = day["de"]
+        if not de_val:
+            continue
+        de_total[de_val] += 1
+        if date.fromisoformat(day["draw_date"]).weekday() == weekday:
+            de_bucket[de_val] += 1
+
+    matches: dict[str, dict] = {}
+    for de_val, hits in de_bucket.items():
+        prob = hits / bucket_days
+        baseline = de_total[de_val] / total_days if total_days else 0.0
+        lift = prob / baseline if baseline > 0 else 0.0
+        if lift >= min_lift:
+            matches[de_val] = {
+                "hits": hits,
+                "opportunities": bucket_days,
+                "prob": _round_prob(prob),
+                "baseline": _round_prob(baseline),
+                "lift": _round_lift(lift),
+                "weekday": WEEKDAYS_VI[weekday],
+            }
+    return matches
+
+
+def de_max_cycle_matches(min_pct: int = 70) -> dict[str, dict]:
+    days = _cached_de_slot_days()
+    draw_dates = [day["draw_date"] for day in days]
+    date_to_idx = _date_index(draw_dates)
+    de_hit_dates: dict[str, list[str]] = defaultdict(list)
+    for day in days:
+        de_hit_dates[day["de"]].append(day["draw_date"])
+
+    matches: dict[str, dict] = {}
+    for de_val, hit_dates in de_hit_dates.items():
+        summary = _loto_summary(hit_dates, draw_dates, date_to_idx)
+        if summary["pct_of_max"] >= min_pct:
+            matches[de_val] = summary
+    return matches
+
+
+def de_loto_boost_matches(yesterday_lotos: set[str], min_lift: float = 1.05) -> dict[str, dict]:
+    if not yesterday_lotos:
+        return {}
+    days = _load_mb_days()
+    total_days = len(days)
+    de_totals: dict[str, int] = defaultdict(int)
+    for day in days:
+        de_totals[day["de"]] += 1
+
+    matches: dict[str, dict] = {}
+    for lot in yesterday_lotos:
+        occ = 0
+        hits = 0
+        for i in range(len(days) - 1):
+            if lot in days[i]["loto_set"]:
+                occ += 1
+                if days[i + 1]["de"] == lot:
+                    hits += 1
+        if occ < 10:
+            continue
+        p_cond = hits / occ
+        baseline = de_totals[lot] / total_days if total_days else 0.0
+        lift = p_cond / baseline if baseline > 0 else 0.0
+        if lift >= min_lift:
+            matches[lot] = {
+                "loto": lot,
+                "occurrences": hits,
+                "loto_days": occ,
+                "prob": _round_prob(p_cond),
+                "baseline": _round_prob(baseline),
+                "lift": _round_lift(lift),
+            }
+    return matches
+
+
 def approaching_max_cycle_matches(min_pct: int = 70) -> dict[str, dict]:
     draw_dates = _draw_dates()
     date_to_idx = _date_index(draw_dates)
@@ -1171,7 +1322,8 @@ def get_day_context(draw_date: str) -> Optional[dict]:
         return None
     prizes = fetch_all(
         """
-        SELECT p.slot_index, p.last_two, p.number
+        SELECT p.slot_index, p.last_two, p.number,
+               p.first_digit::text AS first_digit, p.last_digit::text AS last_digit
         FROM draws d JOIN prizes p ON p.draw_id = d.id
         WHERE d.region = 'MB' AND d.draw_date = %s
         ORDER BY p.slot_index
@@ -1179,8 +1331,20 @@ def get_day_context(draw_date: str) -> Optional[dict]:
         (draw_date,),
     )
     loto_set = {p["last_two"] for p in prizes}
-    de = next((p["last_two"] for p in prizes if p["slot_index"] == 0), "")
-    return {"draw_date": draw_date, "de": de, "loto_set": loto_set}
+    de_row = next((p for p in prizes if p["slot_index"] == 0), None)
+    de = de_row["last_two"] if de_row else ""
+    de_dau = ""
+    de_dit = ""
+    if de_row:
+        de_dau = de_row["first_digit"] or (de[0] if de else "")
+        de_dit = de_row["last_digit"] or (de[1] if len(de) >= 2 else "")
+    return {
+        "draw_date": draw_date,
+        "de": de,
+        "de_dau": de_dau,
+        "de_dit": de_dit,
+        "loto_set": loto_set,
+    }
 
 
 def get_max_dan(
