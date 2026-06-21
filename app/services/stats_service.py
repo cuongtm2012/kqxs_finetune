@@ -1442,7 +1442,7 @@ def conditional_frequency_matches(
     return matches
 
 
-def approaching_max_cycle_matches(min_pct: int = 70) -> dict[str, dict]:
+def approaching_max_cycle_matches(min_pct: int = 55) -> dict[str, dict]:
     draw_dates = _draw_dates()
     date_to_idx = _date_index(draw_dates)
     loto_hits = _all_loto_hits()
@@ -1452,6 +1452,64 @@ def approaching_max_cycle_matches(min_pct: int = 70) -> dict[str, dict]:
         if summary["pct_of_max"] >= min_pct:
             matches[lot] = summary
     return matches
+
+
+def gap_hot_matches(min_gap: int = 8) -> dict[str, dict]:
+    """Lô đang gan: current_gap >= min_gap (không cần chạm max cycle)."""
+    draw_dates = _draw_dates()
+    date_to_idx = _date_index(draw_dates)
+    loto_hits = _all_loto_hits()
+    matches: dict[str, dict] = {}
+    for lot, hit_dates in loto_hits.items():
+        summary = _loto_summary(hit_dates, draw_dates, date_to_idx)
+        if summary["current_gap"] >= min_gap:
+            matches[lot] = summary
+    return matches
+
+
+def frequency_hot_matches(min_lift: float = 1.05) -> dict[str, dict]:
+    """Lô hay về: tần suất ngày có mặt / baseline trung bình toàn bộ loto."""
+    draw_dates = _draw_dates()
+    date_to_idx = _date_index(draw_dates)
+    loto_hits = _all_loto_hits()
+    summaries: dict[str, dict] = {}
+    freqs: list[float] = []
+    for lot, hit_dates in loto_hits.items():
+        summary = _loto_summary(hit_dates, draw_dates, date_to_idx)
+        summaries[lot] = summary
+        freqs.append(summary["frequency"])
+    baseline = sum(freqs) / len(freqs) if freqs else 0.0
+    matches: dict[str, dict] = {}
+    for lot, summary in summaries.items():
+        freq = summary["frequency"]
+        lift = freq / baseline if baseline > 0 else 0.0
+        if lift >= min_lift:
+            matches[lot] = {
+                **summary,
+                "lift": _round_lift(lift),
+                "baseline": round(baseline, 4),
+                "freq_pct": round(freq * 100, 2),
+            }
+    return matches
+
+
+def resolve_cf_weekday(
+    db_loto: str,
+    target_weekday: Optional[int],
+    min_samples: int = 10,
+) -> Optional[int]:
+    """Dùng filter thứ chỉ khi đủ mẫu lịch sử; ngược lại bỏ filter thứ."""
+    if target_weekday is None:
+        return None
+    probe = get_conditional_frequency(
+        db_loto=db_loto,
+        target_weekday=target_weekday,
+        min_occ=1,
+        limit=1,
+    )
+    if probe["total_samples"] >= min_samples:
+        return target_weekday
+    return None
 
 
 def get_day_context(draw_date: str) -> Optional[dict]:

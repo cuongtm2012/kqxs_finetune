@@ -36,7 +36,7 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 class CandidatesBacktestRequest(BaseModel):
     days: int = Field(default=90, ge=1, le=365)
     top: Optional[int] = Field(default=None, ge=1, le=100)
-    min_filters: int = Field(default=1, ge=1, le=8)
+    min_filters: int = Field(default=1, ge=1, le=10)
     target: Literal["loto", "de"] = Field(default="loto")
 
 
@@ -48,7 +48,7 @@ class CandidatesPersistRequest(BaseModel):
     target_date: Optional[str] = None
     target: Literal["loto", "de", "both"] = Field(default="both")
     top: Optional[int] = Field(default=None, ge=1, le=100)
-    min_filters: int = Field(default=1, ge=1, le=8)
+    min_filters: int = Field(default=1, ge=1, le=10)
     sort: Literal["score", "filters", "loto"] = Field(default="score")
 
 
@@ -58,7 +58,7 @@ class IntersectionBacktestRequest(BaseModel):
     min_cf_lift: Optional[float] = Field(default=None, ge=0.0)
     min_rbk_cau: Optional[int] = Field(default=None, ge=1)
     strategy: Literal["intersection", "cf_only", "rbk_only"] = Field(default="intersection")
-    fallback: Literal["cf_only", "rbk_only", "none"] = Field(default="cf_only")
+    fallback: Literal["cf_only", "rbk_only", "none"] = Field(default="none")
     rbk_limit: int = Field(default=5, ge=1, le=9)
     compare_strategies: bool = Field(default=True)
 
@@ -212,9 +212,9 @@ def intersection(
     min_cf_lift: float = Query(default=3.0, ge=0.0),
     min_rbk_cau: int = Query(default=4, ge=1),
     strategy: Literal["intersection", "cf_only", "rbk_only"] = Query(default="intersection"),
-    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="cf_only"),
+    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="none"),
     rbk_limit: int = Query(default=5, ge=1, le=9),
-    min_occ: int = Query(default=2, ge=1),
+    min_occ: int = Query(default=1, ge=1),
 ):
     try:
         return build_intersection(
@@ -238,7 +238,7 @@ def intersection_evaluate(
     min_cf_lift: float = Query(default=3.0, ge=0.0),
     min_rbk_cau: int = Query(default=4, ge=1),
     strategy: Literal["intersection", "cf_only", "rbk_only"] = Query(default="intersection"),
-    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="cf_only"),
+    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="none"),
     rbk_limit: int = Query(default=5, ge=1, le=9),
 ):
     try:
@@ -273,7 +273,7 @@ def intersection_backtest(body: IntersectionBacktestRequest):
 def candidates(
     target_date: Optional[str] = Query(default=None),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=8),
+    min_filters: int = Query(default=1, ge=1, le=10),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
     target: Literal["loto", "de"] = Query(default="loto"),
     include_reasons: bool = Query(default=True),
@@ -298,7 +298,7 @@ def candidates_evaluate(
     target_date: str = Query(..., description="Ngày đã có KQXS"),
     target: Literal["loto", "de"] = Query(default="loto"),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=8),
+    min_filters: int = Query(default=1, ge=1, le=10),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
 ):
     try:
@@ -373,7 +373,7 @@ def candidates_snapshot(
     target_date: str = Query(...),
     target: Literal["loto", "de"] = Query(default="loto"),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=8),
+    min_filters: int = Query(default=1, ge=1, le=10),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
 ):
     try:

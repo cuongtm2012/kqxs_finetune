@@ -123,7 +123,7 @@ Layer 3 — Không pick
 | `min_cf_lift` | 3.0 | Lift tối thiểu cho conditional frequency |
 | `min_rbk_cau` | 4 | Số cầu tối thiểu cho RBK cầu lặp |
 | `strategy` | `intersection` | `intersection` / `cf_only` / `rbk_only` |
-| `fallback` | `cf_only` | Khi ko có intersection: `cf_only` / `rbk_only` / `none` |
+| `fallback` | `cf_only` | Khi ko có intersection: `cf_only` / `rbk_only` / **`none`** (default v4.3) |
 
 ### 4.5 API
 

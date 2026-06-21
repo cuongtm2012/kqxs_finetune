@@ -41,7 +41,8 @@ scripts/
   tune_ensemble_weights.py
   migrate_mongo_to_pg.py  # One-time Mongo → PG
 docs/
-  SPEC-stats-engine-v4.2.md    # Spec hiện tại
+  SPEC-stats-engine-v4.3.md    # Spec hiện tại (gap-hot + frequency-hot)
+  SPEC-stats-engine-v4.2.md
   SPEC-stats-engine-v4.1.md
   SPEC-stats-engine-v4.md
   SPEC-stats-engine-v2.md

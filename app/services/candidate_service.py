@@ -18,6 +18,8 @@ from app.services.stats_service import (
     de_calendar_matches,
     de_lag1_matches,
     de_loto_boost_matches,
+    frequency_hot_matches,
+    gap_hot_matches,
     get_day_context,
     get_lo_roi,
     get_pairs,
@@ -43,6 +45,9 @@ DE_FILTER_PRIORITY = {
 
 LO_ROI_SCORE_CAP = 1.0
 DE_MAX_MIN_FILTERS = 2
+MAX_CYCLE_MIN_PCT = 55
+GAP_HOT_MIN_GAP = 8
+FREQUENCY_HOT_MIN_LIFT = 1.05
 
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
@@ -51,6 +56,10 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return min((lift - 1) * 2, 0.5)
     if filter_key == "max-cycle":
         return detail.get("pct_of_max", 0) / 100.0
+    if filter_key == "gap-hot":
+        return min(detail.get("current_gap", 0) / 25.0, 0.5)
+    if filter_key == "frequency-hot":
+        return min((float(detail.get("lift", 1)) - 1) * 2, 0.4)
     if filter_key in ("calendar", "de-calendar"):
         return min((lift - 1) * 3, 0.5)
     if filter_key == "lo-roi":
@@ -139,7 +148,7 @@ def _same_day_matches(yesterday_lotos: set[str], min_lift: float = 1.10) -> list
     return matches
 
 
-def _max_cycle_matches(min_pct: int = 70) -> list[FilterMatch]:
+def _max_cycle_matches(min_pct: int = MAX_CYCLE_MIN_PCT) -> list[FilterMatch]:
     matches: list[FilterMatch] = []
     for lot, summary in approaching_max_cycle_matches(min_pct=min_pct).items():
         reason = (
@@ -147,6 +156,28 @@ def _max_cycle_matches(min_pct: int = 70) -> list[FilterMatch]:
             f"({summary['pct_of_max']}%)"
         )
         matches.append((lot, reason, summary))
+    return matches
+
+
+def _gap_hot_matches(min_gap: int = GAP_HOT_MIN_GAP) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for lot, summary in gap_hot_matches(min_gap=min_gap).items():
+        reason = (
+            f"gap-hot: loto {lot} gan {summary['current_gap']} ngày "
+            f"(max hist {summary['max_gap_hist']}, {summary['pct_of_max']}% max cycle)"
+        )
+        matches.append((lot, reason, summary))
+    return matches
+
+
+def _frequency_hot_matches(min_lift: float = FREQUENCY_HOT_MIN_LIFT) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for lot, info in frequency_hot_matches(min_lift=min_lift).items():
+        reason = (
+            f"frequency-hot: loto {lot} xuất hiện {info['freq_pct']:.1f}% ngày "
+            f"(lift {info['lift']}x vs baseline {info['baseline']:.1%})"
+        )
+        matches.append((lot, reason, info))
     return matches
 
 
@@ -320,7 +351,9 @@ def _loto_filter_defs(
     return [
         {"key": "lag-1", "min_lift": 1.10, "fn": lambda: _lag1_matches(yesterday_lotos)},
         {"key": "same-day", "min_lift": 1.10, "fn": lambda: _same_day_matches(yesterday_lotos)},
-        {"key": "max-cycle", "min_pct": 70, "fn": lambda: _max_cycle_matches()},
+        {"key": "max-cycle", "min_pct": MAX_CYCLE_MIN_PCT, "fn": lambda: _max_cycle_matches()},
+        {"key": "gap-hot", "min_gap": GAP_HOT_MIN_GAP, "fn": lambda: _gap_hot_matches()},
+        {"key": "frequency-hot", "min_lift": FREQUENCY_HOT_MIN_LIFT, "fn": lambda: _frequency_hot_matches()},
         {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
         {"key": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
         {

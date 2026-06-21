@@ -7,7 +7,7 @@ from app.db import fetch_all
 from app.prediction.constants import TARGET_DE
 from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
 from app.services.rbk_crawler import get_rbk_cau
-from app.services.stats_service import get_conditional_frequency, get_day_context
+from app.services.stats_service import get_conditional_frequency, get_day_context, resolve_cf_weekday
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,14 @@ DEFAULT_MIN_CF_LIFT = 3.0
 DEFAULT_MIN_RBK_CAU = 4
 DEFAULT_TOP = 20
 DEFAULT_RBK_LIMIT = 5
+DEFAULT_MIN_OCC = 1
+CF_MIN_WEEKDAY_SAMPLES = 10
 
 BACKTEST_CONFIGS = [
     {"min_cf_lift": 4.0, "min_rbk_cau": 4, "strategy": "intersection", "fallback": "none"},
     {"min_cf_lift": 4.0, "min_rbk_cau": 5, "strategy": "intersection", "fallback": "none"},
-    {"min_cf_lift": 3.0, "min_rbk_cau": 5, "strategy": "intersection", "fallback": "cf_only"},
-    {"min_cf_lift": 3.0, "min_rbk_cau": 4, "strategy": "intersection", "fallback": "cf_only"},
+    {"min_cf_lift": 3.0, "min_rbk_cau": 5, "strategy": "intersection", "fallback": "none"},
+    {"min_cf_lift": 3.0, "min_rbk_cau": 4, "strategy": "intersection", "fallback": "none"},
 ]
 
 
@@ -53,11 +55,12 @@ def _get_cf_candidates(
     db_loto: str,
     target_weekday: Optional[int],
     min_cf_lift: float,
-    min_occ: int = 2,
-) -> tuple[list[dict], int]:
+    min_occ: int = DEFAULT_MIN_OCC,
+) -> tuple[list[dict], int, Optional[int]]:
+    cf_weekday = resolve_cf_weekday(db_loto, target_weekday, min_samples=CF_MIN_WEEKDAY_SAMPLES)
     result = get_conditional_frequency(
         db_loto=db_loto,
-        target_weekday=target_weekday,
+        target_weekday=cf_weekday,
         min_occ=min_occ,
         limit=100,
         sort="lift",
@@ -72,7 +75,7 @@ def _get_cf_candidates(
         for row in result["loto_frequency"]
         if row["lift"] >= min_cf_lift
     ]
-    return candidates, result["total_samples"]
+    return candidates, result["total_samples"], cf_weekday
 
 
 def _get_rbk_candidates(
@@ -157,9 +160,9 @@ def build_intersection(
     min_cf_lift: float = DEFAULT_MIN_CF_LIFT,
     min_rbk_cau: int = DEFAULT_MIN_RBK_CAU,
     strategy: IntersectionStrategy = "intersection",
-    fallback: IntersectionFallback = "cf_only",
+    fallback: IntersectionFallback = "none",
     rbk_limit: int = DEFAULT_RBK_LIMIT,
-    min_occ: int = 2,
+    min_occ: int = DEFAULT_MIN_OCC,
 ) -> dict:
     start_ms = time.perf_counter()
     target_str, as_of_str = _resolve_dates(target_date)
@@ -173,7 +176,7 @@ def build_intersection(
     yesterday_db_loto = yesterday_db
     weekday = target_dt.weekday()
 
-    cf_candidates, cf_total_samples = _get_cf_candidates(
+    cf_candidates, cf_total_samples, cf_weekday = _get_cf_candidates(
         db_loto=yesterday_db_loto,
         target_weekday=weekday,
         min_cf_lift=min_cf_lift,
@@ -224,6 +227,8 @@ def build_intersection(
         "final_picks": final_picks,
         "meta": {
             "cf_total_samples": cf_total_samples,
+            "cf_weekday_applied": cf_weekday,
+            "cf_weekday_skipped": cf_weekday is None and weekday is not None,
             "rbk_total_cau": rbk_total_cau,
             "strategy_used": strategy_used,
             "picks_count": len(final_picks),
@@ -239,7 +244,7 @@ def evaluate_intersection(
     min_cf_lift: float = DEFAULT_MIN_CF_LIFT,
     min_rbk_cau: int = DEFAULT_MIN_RBK_CAU,
     strategy: IntersectionStrategy = "intersection",
-    fallback: IntersectionFallback = "cf_only",
+    fallback: IntersectionFallback = "none",
     rbk_limit: int = DEFAULT_RBK_LIMIT,
 ) -> dict:
     start_ms = time.perf_counter()
@@ -350,7 +355,7 @@ def run_intersection_backtest(
     min_cf_lift: Optional[float] = None,
     min_rbk_cau: Optional[int] = None,
     strategy: IntersectionStrategy = "intersection",
-    fallback: IntersectionFallback = "cf_only",
+    fallback: IntersectionFallback = "none",
     rbk_limit: int = DEFAULT_RBK_LIMIT,
     compare_strategies: bool = True,
 ) -> dict:
