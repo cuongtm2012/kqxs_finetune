@@ -6,9 +6,13 @@ from pydantic import BaseModel, Field
 from app.services.candidate_service import (
     build_candidates,
     evaluate_candidates,
+    get_candidate_history,
+    get_candidate_snapshot,
+    persist_candidate_snapshot,
     run_candidates_backtest,
 )
-from app.services.rbk_crawler import get_rbk_cau
+from app.services.rbk_crawler import get_rbk_cau, run_rbk_cau_backtest
+from app.utils.date_util import spec_weekday_to_python
 from app.services.stats_service import (
     get_calendar,
     get_conditional_frequency,
@@ -33,6 +37,18 @@ class CandidatesBacktestRequest(BaseModel):
     top: Optional[int] = Field(default=None, ge=1, le=100)
     min_filters: int = Field(default=1, ge=1, le=8)
     target: Literal["loto", "de"] = Field(default="loto")
+
+
+class RbkCauBacktestRequest(BaseModel):
+    days: int = Field(default=30, ge=1, le=90)
+
+
+class CandidatesPersistRequest(BaseModel):
+    target_date: Optional[str] = None
+    target: Literal["loto", "de", "both"] = Field(default="both")
+    top: Optional[int] = Field(default=None, ge=1, le=100)
+    min_filters: int = Field(default=1, ge=1, le=8)
+    sort: Literal["score", "filters", "loto"] = Field(default="score")
 
 
 @router.get("/pairs")
@@ -144,18 +160,28 @@ def calendar(
 @router.get("/conditional-frequency")
 def conditional_frequency(
     db_loto: str = Query(..., min_length=2, max_length=2),
-    target_weekday: Optional[int] = Query(default=None, ge=0, le=6),
+    target_weekday: Optional[int] = Query(
+        default=None,
+        ge=0,
+        le=6,
+        description="SPEC weekday: 0=Chủ nhật, 1=Thứ hai, ..., 6=Thứ bảy",
+    ),
     min_occ: int = Query(default=2, ge=1),
     limit: int = Query(default=30, ge=1, le=100),
     sort: Literal["count", "lift"] = Query(default="count"),
 ):
-    return get_conditional_frequency(
+    py_weekday = spec_weekday_to_python(target_weekday) if target_weekday is not None else None
+    result = get_conditional_frequency(
         db_loto=db_loto,
-        target_weekday=target_weekday,
+        target_weekday=py_weekday,
         min_occ=min_occ,
         limit=limit,
         sort=sort,
     )
+    if target_weekday is not None:
+        result["target_weekday"] = target_weekday
+        result["params"]["target_weekday"] = target_weekday
+    return result
 
 
 @router.get("/rbk-cau")
@@ -219,6 +245,71 @@ def candidates_backtest(body: CandidatesBacktestRequest):
         min_filters=body.min_filters,
         target=body.target,
     )
+
+
+@router.post("/rbk-cau/backtest")
+def rbk_cau_backtest(body: RbkCauBacktestRequest):
+    return run_rbk_cau_backtest(days=body.days)
+
+
+@router.post("/candidates/persist")
+def candidates_persist(body: CandidatesPersistRequest):
+    targets = [body.target] if body.target != "both" else ["loto", "de"]
+    saved: list[dict] = []
+    for target in targets:
+        try:
+            result = build_candidates(
+                target_date=body.target_date,
+                top=body.top,
+                min_filters=body.min_filters,
+                sort=body.sort,
+                target=target,
+            )
+            snapshot_id = persist_candidate_snapshot(
+                result,
+                min_filters=body.min_filters,
+                top=body.top,
+            )
+            saved.append(
+                {
+                    "id": snapshot_id,
+                    "target": target,
+                    "target_date": result["target_date"],
+                    "candidate_count": len(result["candidates"]),
+                }
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"saved": saved}
+
+
+@router.get("/candidates/history")
+def candidates_history(
+    limit: int = Query(default=30, ge=1, le=365),
+    target: Optional[Literal["loto", "de"]] = Query(default=None),
+    target_date: Optional[str] = Query(default=None),
+):
+    return get_candidate_history(limit=limit, target=target, target_date=target_date)
+
+
+@router.get("/candidates/snapshot")
+def candidates_snapshot(
+    target_date: str = Query(...),
+    target: Literal["loto", "de"] = Query(default="loto"),
+    top: Optional[int] = Query(default=None, ge=1, le=100),
+    min_filters: int = Query(default=1, ge=1, le=8),
+    sort: Literal["score", "filters", "loto"] = Query(default="score"),
+):
+    try:
+        return get_candidate_snapshot(
+            target_date=target_date,
+            target=target,
+            top=top,
+            min_filters=min_filters,
+            sort=sort,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/max-dan")

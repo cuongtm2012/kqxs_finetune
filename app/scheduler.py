@@ -20,6 +20,13 @@ def _import_kqxs_today():
         from app.services.stats_service import clear_stats_cache
 
         clear_stats_cache()
+        try:
+            from app.services.candidate_service import persist_daily_candidates
+
+            ids = persist_daily_candidates()
+            logger.info("Persisted candidate snapshots: %s", ids)
+        except Exception as exc:
+            logger.warning("Failed to persist candidate snapshots: %s", exc)
         logger.info("Scheduled XSMB import finished for %s", day)
     else:
         logger.warning("Scheduled XSMB import failed for %s", day)

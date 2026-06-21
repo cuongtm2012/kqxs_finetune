@@ -164,9 +164,14 @@ So sánh prediction đã build vs KQXS thực của `target_date`.
 
 ---
 
-## 7. Module 10: Persist (future — chưa code)
+## 7. Module 10: Persist candidates
 
-Lưu candidates sau mỗi ngày vào DB để audit lịch sử. Không block v4.2.
+Sau mỗi lần import KQXS (scheduler), lưu snapshot candidates cho ngày tiếp theo (`loto` + `de`).
+
+- Table: `candidate_snapshots` (`db/migrations/003_candidate_snapshots.sql`)
+- `POST /stats/candidates/persist` — lưu thủ công
+- `GET /stats/candidates/history` — danh sách snapshot
+- `GET /stats/candidates/snapshot` — chi tiết 1 snapshot
 
 ---
 
@@ -177,7 +182,7 @@ Lưu candidates sau mỗi ngày vào DB để audit lịch sử. Không block v4
 | 7 | `/stats/candidates` | **Done** (v4.2 scorer) |
 | 8 | `/stats/candidates/backtest` | **Done** (v4.2 metrics) |
 | 9 | `/stats/candidates/evaluate` | **Done** |
-| 10 | persist candidates | **TODO** |
+| 10 | persist candidates | **Done** (`POST /stats/candidates/persist`, scheduler) |
 
 ---
 
@@ -189,6 +194,13 @@ curl "http://localhost:8081/stats/candidates/evaluate?target_date=2026-06-21&tar
 curl -X POST http://localhost:8081/stats/candidates/backtest \
   -H 'Content-Type: application/json' \
   -d '{"days":90,"target":"de"}'
+curl -X POST http://localhost:8081/stats/candidates/persist \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"both"}'
+curl "http://localhost:8081/stats/candidates/history?limit=10"
+curl -X POST http://localhost:8081/stats/rbk-cau/backtest \
+  -H 'Content-Type: application/json' \
+  -d '{"days":30}'
 ```
 
 ---

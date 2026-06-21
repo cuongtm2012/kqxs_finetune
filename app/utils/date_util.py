@@ -5,6 +5,28 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# SPEC weekday: 0=Chủ nhật, 1=Thứ hai, ..., 6=Thứ bảy
+SPEC_WEEKDAY_LABELS = (
+    "Chủ nhật",
+    "Thứ hai",
+    "Thứ ba",
+    "Thứ tư",
+    "Thứ năm",
+    "Thứ sáu",
+    "Thứ bảy",
+)
+
+_SPEC_TO_PYTHON = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+_PYTHON_TO_SPEC = {v: k for k, v in _SPEC_TO_PYTHON.items()}
+
+
+def spec_weekday_to_python(spec_weekday: int) -> int:
+    return _SPEC_TO_PYTHON[spec_weekday]
+
+
+def python_weekday_to_spec(python_weekday: int) -> int:
+    return _PYTHON_TO_SPEC[python_weekday]
+
 
 def today_yyyy_mm_dd() -> str:
     return date.today().strftime("%Y-%m-%d")

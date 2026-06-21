@@ -10,6 +10,9 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.db import fetch_all
+from app.prediction.constants import TARGET_LOTO
+from app.prediction.features import actual_values_for_date, previous_draw_date
 from app.utils.http_util import obtain_content
 
 logger = logging.getLogger(__name__)
@@ -31,15 +34,16 @@ def _cache_path(d: date, limit: int) -> Path:
     return CACHE_DIR / f"{d.isoformat()}_{limit}.json"
 
 
-def _read_cache(d: date, limit: int) -> Optional[dict]:
+def _read_cache(d: date, limit: int, allow_stale: bool = False) -> Optional[dict]:
     path = _cache_path(d, limit)
     if not path.exists():
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        cached_at = datetime.fromisoformat(payload["cached_at"])
-        if datetime.now() - cached_at > CACHE_TTL:
-            return None
+        if not allow_stale:
+            cached_at = datetime.fromisoformat(payload["cached_at"])
+            if datetime.now() - cached_at > CACHE_TTL:
+                return None
         return payload["data"]
     except (json.JSONDecodeError, KeyError, ValueError):
         return None
@@ -170,19 +174,30 @@ def get_rbk_cau(
     date_str: Optional[str] = None,
     limit: int = 5,
     min_cau: int = 1,
+    allow_stale_cache: bool = False,
+    crawl_if_missing: bool = True,
 ) -> dict:
     start_ms = time.perf_counter()
     target = date.fromisoformat(date_str) if date_str else date.today()
     ngay = _format_ngay(target)
-    cached = _read_cache(target, limit)
+    cached = _read_cache(target, limit, allow_stale=allow_stale_cache)
     from_cache = cached is not None
 
     if cached:
         data = cached
-    else:
+    elif crawl_if_missing:
         data = crawl_rbk_cau(limit, ngay)
         if not data.get("error"):
             _write_cache(target, limit, data)
+    else:
+        data = {
+            "error": "cache_miss",
+            "total_cau": 0,
+            "cau_lap": [],
+            "unique_numbers": [],
+            "recommended": [],
+            "number_counts": {},
+        }
 
     recommended, number_counts = _recommend(data.get("cau_lap", []), min_cau)
     if not recommended:
@@ -236,3 +251,114 @@ def rbk_cau_loto_matches(
             "lift": round(1 + weight, 2),
         }
     return matches
+
+
+RBK_BACKTEST_LIMITS = (1, 3, 5, 7, 9)
+
+
+def run_rbk_cau_backtest(days: int = 30) -> dict:
+    start_ms = time.perf_counter()
+    rows = fetch_all(
+        """
+        SELECT draw_date::text AS draw_date
+        FROM draws
+        WHERE region = 'MB'
+        ORDER BY draw_date DESC
+        LIMIT %s
+        """,
+        (days,),
+    )
+    target_dates = sorted(row["draw_date"] for row in rows)
+    if not target_dates:
+        return {
+            "module": "rbk-cau-backtest",
+            "days_requested": days,
+            "days_evaluated": 0,
+            "limits": [],
+            "meta": {"query_time_ms": 0, "error": "no_draw_data"},
+        }
+
+    limit_stats: dict[int, dict] = {
+        lim: {
+            "limit": lim,
+            "days_evaluated": 0,
+            "days_skipped": 0,
+            "hit_days": 0,
+            "total_recall": 0.0,
+            "total_overlap": 0,
+            "total_recommended": 0,
+            "total_actual": 0,
+        }
+        for lim in RBK_BACKTEST_LIMITS
+    }
+
+    for target_date in target_dates:
+        target_dt = date.fromisoformat(target_date)
+        as_of = previous_draw_date(target_dt)
+        if not as_of:
+            continue
+        actual = set(actual_values_for_date(target_dt, TARGET_LOTO))
+        if not actual:
+            continue
+
+        for lim in RBK_BACKTEST_LIMITS:
+            result = get_rbk_cau(
+                date_str=as_of.isoformat(),
+                limit=lim,
+                allow_stale_cache=True,
+                crawl_if_missing=True,
+            )
+            if result.get("meta", {}).get("error"):
+                limit_stats[lim]["days_skipped"] += 1
+                continue
+
+            recommended = set(result.get("recommended", []))
+            overlap = len(recommended & actual)
+            stats = limit_stats[lim]
+            stats["days_evaluated"] += 1
+            stats["total_overlap"] += overlap
+            stats["total_recommended"] += len(recommended)
+            stats["total_actual"] += len(actual)
+            stats["total_recall"] += overlap / len(actual)
+            if overlap > 0:
+                stats["hit_days"] += 1
+
+    limits_out: list[dict] = []
+    best_limit: Optional[int] = None
+    best_score = -1.0
+    for lim in RBK_BACKTEST_LIMITS:
+        stats = limit_stats[lim]
+        evaluated = stats["days_evaluated"]
+        hit_rate = stats["hit_days"] / evaluated if evaluated else 0.0
+        avg_recall = stats["total_recall"] / evaluated if evaluated else 0.0
+        avg_recommended = stats["total_recommended"] / evaluated if evaluated else 0.0
+        avg_overlap = stats["total_overlap"] / evaluated if evaluated else 0.0
+        row = {
+            "limit": lim,
+            "days_evaluated": evaluated,
+            "days_skipped": stats["days_skipped"],
+            "hit_rate": round(hit_rate, 4),
+            "avg_recall": round(avg_recall, 4),
+            "avg_overlap": round(avg_overlap, 2),
+            "avg_recommended_count": round(avg_recommended, 1),
+        }
+        limits_out.append(row)
+        score = hit_rate * 0.4 + avg_recall * 0.6
+        if evaluated > 0 and score > best_score:
+            best_score = score
+            best_limit = lim
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "rbk-cau-backtest",
+        "period_from": target_dates[0],
+        "period_to": target_dates[-1],
+        "days_requested": days,
+        "days_evaluated": len(target_dates),
+        "recommended_limit": best_limit,
+        "limits": limits_out,
+        "meta": {
+            "query_time_ms": elapsed_ms,
+            "note": "RBK cau as_of_date predicts next draw; stale cache allowed for historical dates",
+        },
+    }

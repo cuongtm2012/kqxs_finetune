@@ -8,6 +8,7 @@ from typing import Callable, Literal, Optional
 from app.db import fetch_all
 from app.prediction.constants import DEFAULT_TOP, TARGET_DE, TARGET_LOTO
 from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
+from app.repositories.candidate_repo import candidate_repo
 from app.services.stats_service import (
     CANDIDATES_DISCLAIMER,
     WEEKDAYS_VI,
@@ -670,3 +671,61 @@ def evaluate_candidates(
         "metrics": metrics,
         "meta": {"query_time_ms": elapsed_ms},
     }
+
+
+def persist_candidate_snapshot(result: dict, min_filters: int = 1, top: Optional[int] = None) -> int:
+    top = top if top is not None else len(result.get("candidates", []))
+    payload = {
+        "target_date": result["target_date"],
+        "as_of_date": result["as_of_date"],
+        "target": result["target"],
+        "top": top,
+        "min_filters": min_filters,
+        "sort": result["meta"]["sort"],
+    }
+    full = {**result, **payload}
+    return candidate_repo.save_snapshot(full)
+
+
+def persist_daily_candidates() -> list[int]:
+    latest = latest_draw_date()
+    if latest is None:
+        logger.warning("persist_daily_candidates: no draw data")
+        return []
+
+    next_day = (latest + timedelta(days=1)).isoformat()
+    ids: list[int] = []
+    for target in (TARGET_LOTO, TARGET_DE):
+        try:
+            result = build_candidates(target_date=next_day, target=target)
+            ids.append(persist_candidate_snapshot(result, min_filters=1))
+        except ValueError as exc:
+            logger.warning("persist_daily_candidates failed target=%s: %s", target, exc)
+    return ids
+
+
+def get_candidate_history(
+    limit: int = 30,
+    target: Optional[CandidateTarget] = None,
+    target_date: Optional[str] = None,
+) -> dict:
+    rows = candidate_repo.list_snapshots(limit=limit, target=target, target_date=target_date)
+    return {
+        "endpoint": "candidates/history",
+        "count": len(rows),
+        "snapshots": rows,
+    }
+
+
+def get_candidate_snapshot(
+    target_date: str,
+    target: CandidateTarget,
+    top: Optional[int] = None,
+    min_filters: int = 1,
+    sort: CandidateSort = "score",
+) -> dict:
+    top = top if top is not None else DEFAULT_TOP[target]
+    row = candidate_repo.get_snapshot(target_date, target, top, min_filters, sort)
+    if not row:
+        raise ValueError(f"No snapshot for {target_date} target={target}")
+    return row

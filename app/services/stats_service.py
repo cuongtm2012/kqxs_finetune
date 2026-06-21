@@ -1308,6 +1308,7 @@ def get_conditional_frequency(
     sort: CondFreqSort = "count",
     history_limit: int = 20,
 ) -> dict:
+    """target_weekday uses Python convention (Mon=0 .. Sun=6); API converts SPEC weekday."""
     start_ms = time.perf_counter()
     rows = fetch_all(
         """

@@ -184,10 +184,10 @@ Từ thống kê cầu lặp, recommend các số có nhiều cầu nhất:
 
 #### Backtest results (30 ngày gần nhất)
 
-Cần chạy backtest với các mức limit 1/3/5/7/9 để xác định sweet spot. Expected:
-- Limit càng cao → cầu càng chất lượng → ít số hơn → precision cao hơn
-- Limit càng thấp → càng nhiều số → recall cao hơn
-- Dùng để chọn limit tối ưu cho candidate pool
+`POST /stats/rbk-cau/backtest` với `{"days": 30}` — so sánh limit 1/3/5/7/9:
+- Limit cao → ít số hơn, precision cao hơn
+- Limit thấp → nhiều số hơn, recall cao hơn
+- Response có `recommended_limit` (sweet spot theo `hit_rate×0.4 + recall×0.6`)
 
 ---
 
@@ -217,6 +217,11 @@ Thêm 2 filters mới:
 - [x] Filters `conditional-frequency`, `rbk-cau`
 
 ### Phase 4 — Module 1-6 ✅ (từ v2/v4)
+
+### Phase 5 — RBK backtest + persist ✅
+- [x] `POST /stats/rbk-cau/backtest`
+- [x] `candidate_snapshots` + persist scheduler
+- [x] `target_weekday` SPEC convention (0=CN) ở API layer
 
 ---
 
