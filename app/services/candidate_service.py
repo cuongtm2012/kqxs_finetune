@@ -16,7 +16,6 @@ from app.services.stats_service import (
     de_calendar_matches,
     de_lag1_matches,
     de_loto_boost_matches,
-    de_max_cycle_matches,
     get_day_context,
     get_lo_roi,
     get_pairs,
@@ -33,17 +32,26 @@ DE_TARGET_WARNING = (
     "Chỉ dùng tham khảo, không kỳ vọng beat baseline >12%."
 )
 
+DE_FILTER_PRIORITY = {
+    "de-loto-boost": 3,
+    "de-lag1": 2,
+    "de-calendar": 1,
+}
+
+LO_ROI_SCORE_CAP = 1.0
+DE_MAX_MIN_FILTERS = 2
+
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
     lift = float(detail.get("lift", 1))
     if filter_key in ("lag-1", "same-day"):
         return min((lift - 1) * 2, 0.5)
-    if filter_key in ("max-cycle", "de-max-cycle"):
+    if filter_key == "max-cycle":
         return detail.get("pct_of_max", 0) / 100.0
     if filter_key in ("calendar", "de-calendar"):
         return min((lift - 1) * 3, 0.5)
     if filter_key == "lo-roi":
-        return (lift - 1) * 1
+        return min((lift - 1) * 1, LO_ROI_SCORE_CAP)
     if filter_key == "de-lag1":
         return min((lift - 1) * 3, 0.5)
     if filter_key == "de-loto-boost":
@@ -189,16 +197,6 @@ def _de_calendar_filter_matches(weekday: int) -> list[FilterMatch]:
     )
 
 
-def _de_max_cycle_filter_matches() -> list[FilterMatch]:
-    return _dict_to_matches(
-        de_max_cycle_matches(min_pct=70),
-        lambda de_val, info: (
-            f"de-max-cycle: đề {de_val} gan {info['current_gap']}/{info['max_gap_hist']} ngày "
-            f"({info['pct_of_max']}%)"
-        ),
-    )
-
-
 def _de_loto_boost_filter_matches(yesterday_lotos: set[str]) -> list[FilterMatch]:
     return _dict_to_matches(
         de_loto_boost_matches(yesterday_lotos, min_lift=1.05),
@@ -209,8 +207,21 @@ def _de_loto_boost_filter_matches(yesterday_lotos: set[str]) -> list[FilterMatch
     )
 
 
-def _sort_candidates(candidates: list[dict], sort: CandidateSort) -> list[dict]:
+def _de_tiebreak(candidate: dict) -> int:
+    return sum(DE_FILTER_PRIORITY.get(k, 0) for k in candidate.get("score_breakdown", {}))
+
+
+def _sort_candidates(
+    candidates: list[dict],
+    sort: CandidateSort,
+    target: CandidateTarget = "loto",
+) -> list[dict]:
     if sort == "score":
+        if target == "de":
+            return sorted(
+                candidates,
+                key=lambda c: (-c["score"], -_de_tiebreak(c), c["loto"]),
+            )
         return sorted(candidates, key=lambda c: (-c["score"], c["loto"]))
     if sort == "filters":
         return sorted(candidates, key=lambda c: (-c["filters_matched"], -c["score"], c["loto"]))
@@ -224,6 +235,7 @@ def _build_from_filters(
     top: int,
     include_reasons: bool,
     include_pair_detail: bool,
+    target: CandidateTarget = "loto",
 ) -> tuple[list[dict], list[dict], dict[str, dict]]:
     loto_filters: dict[str, dict[str, dict]] = defaultdict(dict)
     filters_applied = []
@@ -269,7 +281,7 @@ def _build_from_filters(
             entry["filter_details"] = {k: filters[k]["detail"] for k in filters}
         candidates.append(entry)
 
-    candidates = _sort_candidates(candidates, sort)[:top]
+    candidates = _sort_candidates(candidates, sort, target)[:top]
     return candidates, filters_applied, loto_filters
 
 
@@ -287,7 +299,6 @@ def _de_filter_defs(yesterday_lotos: set[str], yesterday_de: str, weekday: int) 
     return [
         {"key": "de-lag1", "min_lift": 1.05, "fn": lambda: _de_lag1_filter_matches(yesterday_de)},
         {"key": "de-calendar", "min_lift": 1.05, "fn": lambda: _de_calendar_filter_matches(weekday)},
-        {"key": "de-max-cycle", "min_pct": 70, "fn": lambda: _de_max_cycle_filter_matches()},
         {
             "key": "de-loto-boost",
             "min_lift": 1.05,
@@ -306,6 +317,11 @@ def build_candidates(
     include_pair_detail: bool = False,
 ) -> dict:
     top = top if top is not None else DEFAULT_TOP[target]
+    min_filters_warning: Optional[str] = None
+    if target == "de" and min_filters > DE_MAX_MIN_FILTERS:
+        min_filters_warning = (
+            f"min_filters={min_filters} quá chặt cho đề — khuyến nghị ≤{DE_MAX_MIN_FILTERS}"
+        )
     start_ms = time.perf_counter()
     target_str, as_of_str = _resolve_dates(target_date)
     target_dt = date.fromisoformat(target_str)
@@ -330,6 +346,7 @@ def build_candidates(
         top,
         include_reasons,
         include_pair_detail,
+        target,
     )
 
     avg_filters = (
@@ -348,7 +365,7 @@ def build_candidates(
         )
 
     context = {
-        "yesterday_lotos": sorted(yesterday_lotos),
+        "yesterday_lotos": len(yesterday_lotos),
         "yesterday_de": yesterday_de,
         "target_weekday": WEEKDAYS_VI[weekday],
     }
@@ -368,6 +385,8 @@ def build_candidates(
     else:
         meta["total_de_scanned"] = len(value_filters)
         meta["warning"] = DE_TARGET_WARNING
+    if min_filters_warning:
+        meta["min_filters_warning"] = min_filters_warning
 
     return {
         "endpoint": "candidates",
@@ -478,21 +497,32 @@ def run_candidates_backtest(
 
     if target == "loto":
         rand_hit, rand_recall = _random_baseline_loto(top)
+        primary_metric = "recall"
+        rand_primary = rand_recall
     else:
         rand_hit, rand_recall = _random_baseline_single(top, 100)
+        primary_metric = "hit_rate"
+        rand_primary = rand_hit
 
     results = []
-    configs = sorted({min_filters, 1, 2, 3})
+    if target == "de":
+        configs = sorted(mf for mf in {min_filters, 1, 2} if mf <= DE_MAX_MIN_FILTERS)
+    else:
+        configs = sorted({min_filters, 1, 2, 3})
     for mf in configs:
         sort_mode: CandidateSort = "score" if mf == 1 else "filters"
         stats = _backtest_config(target, target_dates, top, mf, sort_mode)
-        lift = stats["recall"] / rand_recall if rand_recall > 0 else 0.0
+        if primary_metric == "recall":
+            lift = stats["recall"] / rand_primary if rand_primary > 0 else 0.0
+        else:
+            lift = stats["hit_rate"] / rand_primary if rand_primary > 0 else 0.0
         results.append(
             {
                 "model": f"candidates (min_filters={mf}, sort={sort_mode})",
                 f"hit_rate@{top}": round(stats["hit_rate"], 3),
                 f"recall@{top}": round(stats["recall"], 3),
                 "lift": round(lift, 2),
+                "primary_metric": primary_metric,
                 "days_evaluated": stats["days_evaluated"],
             }
         )
@@ -503,6 +533,7 @@ def run_candidates_backtest(
             f"hit_rate@{top}": round(rand_hit, 3),
             f"recall@{top}": round(rand_recall, 3),
             "lift": 1.0,
+            "primary_metric": primary_metric,
         }
     )
 
@@ -531,8 +562,75 @@ def run_candidates_backtest(
             "query_time_ms": elapsed_ms,
             "date_range": [target_dates[0].isoformat(), target_dates[-1].isoformat()] if target_dates else [],
             "target_enabled": target_enabled,
+            "primary_metric": primary_metric,
+            "days": days,
         },
     }
     if warnings:
         response["warnings"] = warnings
     return response
+
+
+def evaluate_candidates(
+    target_date: str,
+    target: CandidateTarget = "loto",
+    top: Optional[int] = None,
+    min_filters: int = 1,
+    sort: CandidateSort = "score",
+) -> dict:
+    start_ms = time.perf_counter()
+    target_dt = date.fromisoformat(target_date)
+    actual_loto = actual_values_for_date(target_dt, TARGET_LOTO)
+    actual_de = actual_values_for_date(target_dt, TARGET_DE)
+    if not actual_loto and not actual_de:
+        raise ValueError(f"No draw data for target_date {target_date}")
+
+    prediction = build_candidates(
+        target_date=target_date,
+        top=top,
+        min_filters=min_filters,
+        sort=sort,
+        target=target,
+        include_reasons=False,
+    )
+    preds = [c["loto"] for c in prediction["candidates"]]
+    de_actual = next(iter(actual_de)) if actual_de else None
+    actual_payload = {
+        "de": de_actual,
+        "loto": sorted(actual_loto),
+    }
+
+    if target == "loto":
+        hits = sorted(set(preds) & actual_loto)
+        metrics = {
+            "primary_metric": "recall",
+            "hit_day": bool(hits),
+            "hits": hits,
+            "hits_count": len(hits),
+            "top_k": len(preds),
+            "recall": round(len(hits) / len(actual_loto), 3) if actual_loto else 0.0,
+            "hit_rate": 1.0 if hits else 0.0,
+        }
+    else:
+        hit = bool(de_actual and de_actual in preds)
+        metrics = {
+            "primary_metric": "hit_rate",
+            "hit": hit,
+            "actual_de": de_actual,
+            "rank": preds.index(de_actual) + 1 if hit else None,
+            "top_k": len(preds),
+            "hit_rate": 1.0 if hit else 0.0,
+        }
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "endpoint": "candidates/evaluate",
+        "target": target,
+        "target_date": target_date,
+        "as_of_date": prediction["as_of_date"],
+        "disclaimer": CANDIDATES_DISCLAIMER,
+        "prediction": preds,
+        "actual": actual_payload,
+        "metrics": metrics,
+        "meta": {"query_time_ms": elapsed_ms},
+    }

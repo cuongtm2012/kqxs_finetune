@@ -3,7 +3,11 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.services.candidate_service import build_candidates, run_candidates_backtest
+from app.services.candidate_service import (
+    build_candidates,
+    evaluate_candidates,
+    run_candidates_backtest,
+)
 from app.services.stats_service import (
     get_calendar,
     get_de_dau,
@@ -154,6 +158,26 @@ def candidates(
             target=target,
             include_reasons=include_reasons,
             include_pair_detail=include_pair_detail,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/candidates/evaluate")
+def candidates_evaluate(
+    target_date: str = Query(..., description="Ngày đã có KQXS"),
+    target: Literal["loto", "de"] = Query(default="loto"),
+    top: Optional[int] = Query(default=None, ge=1, le=100),
+    min_filters: int = Query(default=1, ge=1, le=8),
+    sort: Literal["score", "filters", "loto"] = Query(default="score"),
+):
+    try:
+        return evaluate_candidates(
+            target_date=target_date,
+            target=target,
+            top=top,
+            min_filters=min_filters,
+            sort=sort,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
