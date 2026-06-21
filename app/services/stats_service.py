@@ -1,11 +1,15 @@
+import logging
 import time
 from collections import defaultdict
 from datetime import date, timedelta
+from functools import lru_cache
 from itertools import combinations
 from typing import Literal, Optional
 
 from app.db import fetch_all, fetch_one
 from app.repositories.draw_repo import draw_repo
+
+logger = logging.getLogger(__name__)
 
 DISCLAIMER = (
     "Thống kê dựa trên dữ liệu lịch sử XSMB. "
@@ -370,7 +374,12 @@ def _loto_summary(
     }
 
 
-def _all_loto_hits() -> dict[str, list[str]]:
+def clear_stats_cache() -> None:
+    _cached_all_loto_hits.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def _cached_all_loto_hits() -> dict[str, list[str]]:
     rows = fetch_all(
         """
         SELECT p.last_two AS loto, d.draw_date::text AS draw_date
@@ -382,7 +391,11 @@ def _all_loto_hits() -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = defaultdict(list)
     for row in rows:
         grouped[row["loto"]].append(row["draw_date"])
-    return grouped
+    return dict(grouped)
+
+
+def _all_loto_hits() -> dict[str, list[str]]:
+    return _cached_all_loto_hits()
 
 
 def get_gap_detail(loto: str, window: int = 0) -> dict:
@@ -832,23 +845,22 @@ def get_lo_roi(
     stats: dict[tuple[str, str], dict] = defaultdict(lambda: {"occurrences": 0, "falls": 0})
     target_lotos = [loto] if loto else sorted(loto_day_counts.keys())
 
-    for i, day in enumerate(days):
-        if i + window >= len(days):
-            continue
-        de_val = day["de"]
-        if not de_val:
-            continue
-        if de and de_val != de:
-            continue
-
+    if len(days) > window:
         window_lotos: set[str] = set()
         for j in range(1, window + 1):
-            window_lotos |= days[i + j]["loto_set"]
+            window_lotos |= days[j]["loto_set"]
 
-        for lot in target_lotos:
-            stats[(de_val, lot)]["occurrences"] += 1
-            if lot in window_lotos:
-                stats[(de_val, lot)]["falls"] += 1
+        for i in range(len(days) - window):
+            de_val = days[i]["de"]
+            if de_val and (not de or de_val == de):
+                for lot in target_lotos:
+                    stats[(de_val, lot)]["occurrences"] += 1
+                    if lot in window_lotos:
+                        stats[(de_val, lot)]["falls"] += 1
+
+            if i + window + 1 < len(days):
+                window_lotos -= days[i + 1]["loto_set"]
+                window_lotos |= days[i + window + 1]["loto_set"]
 
     rows: list[dict] = []
     for (de_val, lot_val), agg in stats.items():

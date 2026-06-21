@@ -1,9 +1,13 @@
+import logging
+import random
 import time
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
 
-from app.prediction.features import latest_draw_date, previous_draw_date
+from app.db import fetch_all
+from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
+from app.prediction.constants import TARGET_LOTO
 from app.services.stats_service import (
     CANDIDATES_DISCLAIMER,
     approaching_max_cycle_matches,
@@ -12,6 +16,8 @@ from app.services.stats_service import (
     get_lo_roi,
     get_pairs,
 )
+
+logger = logging.getLogger(__name__)
 
 FilterMatch = tuple[str, str, Optional[dict]]
 
@@ -49,7 +55,7 @@ def _lag1_matches(yesterday_lotos: set[str], min_lift: float = 1.10) -> list[Fil
             detail = {**row, "from_loto": x, "total_days": total_days}
             matches.append((y, reason, detail))
             seen.add(y)
-        elif y in yesterday_lotos and x not in seen:
+        if y in yesterday_lotos and x not in seen:
             reason = (
                 f"lag-1: {y} hôm qua → {x} có P={row['p_xy']:.1%} "
                 f"(lift {row['lift']}x, baseline {row['baseline']:.1%})"
@@ -75,7 +81,7 @@ def _same_day_matches(yesterday_lotos: set[str], min_lift: float = 1.10) -> list
             )
             matches.append((y, reason, row))
             seen.add(y)
-        elif y in yesterday_lotos and x not in seen:
+        if y in yesterday_lotos and x not in seen:
             reason = (
                 f"same-day: ({x},{y}) cùng về {row['co_occurrences']}/{total_days} ngày "
                 f"(lift {row['lift']}x)"
@@ -200,6 +206,8 @@ def build_candidates(
         else 0.0
     )
     elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    if elapsed_ms > 1000:
+        logger.warning("candidates query slow: %dms target_date=%s", elapsed_ms, target_str)
 
     return {
         "endpoint": "candidates",
@@ -220,4 +228,112 @@ def build_candidates(
             "avg_filters_per_candidate": avg_filters,
             "query_time_ms": elapsed_ms,
         },
+    }
+
+
+def _evaluate_candidate_day(candidate_lotos: list[str], actual: set[str]) -> tuple[float, float]:
+    pred = set(candidate_lotos)
+    overlap = len(pred & actual)
+    hit = 1.0 if overlap > 0 else 0.0
+    recall = overlap / len(actual) if actual else 0.0
+    return hit, recall
+
+
+def _random_baseline_loto(top_k: int, trials: int = 5000) -> tuple[float, float]:
+    hit_sum = 0.0
+    recall_sum = 0.0
+    for _ in range(trials):
+        picked = {f"{v:02d}" for v in random.sample(range(100), top_k)}
+        actual = {f"{v:02d}" for v in random.sample(range(100), 27)}
+        hit, recall = _evaluate_candidate_day(list(picked), actual)
+        hit_sum += hit
+        recall_sum += recall
+    return hit_sum / trials, recall_sum / trials
+
+
+def _backtest_min_filters(
+    target_dates: list[date],
+    top: int,
+    min_filters: int,
+) -> dict:
+    hit_sum = 0.0
+    recall_sum = 0.0
+    evaluated = 0
+    for target_dt in target_dates:
+        if previous_draw_date(target_dt) is None:
+            continue
+        try:
+            result = build_candidates(
+                target_date=target_dt.isoformat(),
+                top=top,
+                min_filters=min_filters,
+                include_reasons=False,
+            )
+        except ValueError:
+            continue
+        candidates = [c["loto"] for c in result["candidates"]]
+        if not candidates:
+            continue
+        actual = actual_values_for_date(target_dt, TARGET_LOTO)
+        if not actual:
+            continue
+        hit, recall = _evaluate_candidate_day(candidates, actual)
+        hit_sum += hit
+        recall_sum += recall
+        evaluated += 1
+    return {
+        "days_evaluated": evaluated,
+        "hit_rate": hit_sum / evaluated if evaluated else 0.0,
+        "recall": recall_sum / evaluated if evaluated else 0.0,
+    }
+
+
+def run_candidates_backtest(
+    days: int = 90,
+    top: int = 20,
+    min_filters: int = 2,
+) -> dict:
+    start_ms = time.perf_counter()
+    rows = fetch_all(
+        """
+        SELECT draw_date::text AS d FROM draws
+        WHERE region = 'MB' ORDER BY draw_date DESC LIMIT %s
+        """,
+        (days,),
+    )
+    target_dates = [date.fromisoformat(r["d"]) for r in reversed(rows)]
+
+    rand_hit, rand_recall = _random_baseline_loto(top)
+    results = []
+
+    for mf in sorted({min_filters, 2, 3}):
+        stats = _backtest_min_filters(target_dates, top, mf)
+        lift = stats["recall"] / rand_recall if rand_recall > 0 else 0.0
+        results.append(
+            {
+                "model": f"candidates (min_filters={mf})",
+                f"hit_rate@{top}": round(stats["hit_rate"], 3),
+                f"recall@{top}": round(stats["recall"], 3),
+                "lift": round(lift, 2),
+                "days_evaluated": stats["days_evaluated"],
+            }
+        )
+
+    results.append(
+        {
+            "model": "random_baseline",
+            f"hit_rate@{top}": round(rand_hit, 3),
+            f"recall@{top}": round(rand_recall, 3),
+            "lift": 1.0,
+        }
+    )
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "candidates",
+        "type": "backtest",
+        "disclaimer": CANDIDATES_DISCLAIMER,
+        "params": {"days": days, "top": top, "min_filters": min_filters},
+        "results": results,
+        "meta": {"query_time_ms": elapsed_ms, "date_range": [target_dates[0].isoformat(), target_dates[-1].isoformat()] if target_dates else []},
     }

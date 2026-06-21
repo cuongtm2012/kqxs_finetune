@@ -170,6 +170,9 @@ class FeatureContext:
 
 def clear_feature_cache() -> None:
     _cache.clear()
+    from app.services.stats_service import clear_stats_cache
+
+    clear_stats_cache()
 
 
 def _parse_date(value) -> date:

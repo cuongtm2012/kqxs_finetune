@@ -80,5 +80,8 @@ def loto_gan(loto: str = Query(min_length=2, max_length=2)):
 
 @router.post("/refresh-views")
 def refresh_views():
+    from app.services.stats_service import clear_stats_cache
+
     draw_repo.refresh_loto_view()
+    clear_stats_cache()
     return {"status": "ok"}

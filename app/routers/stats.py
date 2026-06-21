@@ -1,8 +1,9 @@
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from app.services.candidate_service import build_candidates
+from app.services.candidate_service import build_candidates, run_candidates_backtest
 from app.services.stats_service import (
     get_calendar,
     get_de_dau,
@@ -19,6 +20,12 @@ from app.services.stats_service import (
 )
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+
+
+class CandidatesBacktestRequest(BaseModel):
+    days: int = Field(default=90, ge=1, le=365)
+    top: int = Field(default=20, ge=1, le=100)
+    min_filters: int = Field(default=2, ge=1, le=8)
 
 
 @router.get("/pairs")
@@ -145,6 +152,15 @@ def candidates(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/candidates/backtest")
+def candidates_backtest(body: CandidatesBacktestRequest):
+    return run_candidates_backtest(
+        days=body.days,
+        top=body.top,
+        min_filters=body.min_filters,
+    )
 
 
 @router.get("/max-dan")

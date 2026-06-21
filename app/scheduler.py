@@ -17,6 +17,9 @@ def _import_kqxs_today():
     day = today_yyyy_mm_dd()
     if import_mb_day(day):
         draw_repo.refresh_loto_view()
+        from app.services.stats_service import clear_stats_cache
+
+        clear_stats_cache()
         logger.info("Scheduled XSMB import finished for %s", day)
     else:
         logger.warning("Scheduled XSMB import failed for %s", day)
