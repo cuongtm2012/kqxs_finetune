@@ -32,7 +32,7 @@ app/
     ...
   repositories/           # draw, kqxs, prediction, rbk, user
   routers/                # kqxs, rbk, analytics, stats, ums
-  services/               # stats_service, candidate_service, scrape, import
+  services/               # stats_service, candidate_service, intersection_service, scrape, import
 db/
   schema.sql              # Full schema + prediction tables
   migrations/002_prediction.sql
@@ -120,6 +120,9 @@ curl -X POST http://localhost:8081/analytics/refresh-views
 | GET | `/stats/max-dan` | Dàn 3–5 số cùng về (`size`, `min_co_occur`) |
 | GET | `/stats/conditional-frequency` | ĐB hôm qua → tần suất ĐB hôm sau |
 | GET | `/stats/rbk-cau` | Crawl cầu rongbachkim |
+| GET | `/stats/intersection` | **v4** CF ∩ RBK cầu lặp (`min_cf_lift`, `min_rbk_cau`) |
+| GET | `/stats/intersection/evaluate` | Đánh giá intersection vs KQXS 1 ngày (đề loto) |
+| POST | `/stats/intersection/backtest` | Backtest intersection + so sánh CF/RBK alone |
 | GET | `/stats/candidates` | Candidate pool (`target=loto\|de`, lift-weighted) |
 | GET | `/stats/candidates/evaluate` | So prediction vs KQXS 1 ngày |
 | POST | `/stats/candidates/backtest` | Backtest candidate vs random baseline |
@@ -130,6 +133,10 @@ Query mẫu:
 curl "http://localhost:8081/stats/pairs?type=lag-1&min_lift=1.1&limit=20"
 curl "http://localhost:8081/stats/conditional-frequency?db_loto=60&limit=10"
 curl "http://localhost:8081/stats/rbk-cau?limit=5"
+curl "http://localhost:8081/stats/intersection?min_cf_lift=3&min_rbk_cau=4"
+curl "http://localhost:8081/stats/intersection/evaluate?target_date=2026-06-21"
+curl -X POST http://localhost:8081/stats/intersection/backtest \
+  -H 'Content-Type: application/json' -d '{"days":30}'
 curl "http://localhost:8081/stats/candidates?target=de"          # default top=10
 curl "http://localhost:8081/stats/candidates/evaluate?target_date=2026-06-21&target=loto"
 curl -X POST http://localhost:8081/stats/candidates/backtest \

@@ -11,6 +11,7 @@ from app.services.candidate_service import (
     persist_candidate_snapshot,
     run_candidates_backtest,
 )
+from app.services.intersection_service import build_intersection, evaluate_intersection, run_intersection_backtest
 from app.services.rbk_crawler import get_rbk_cau, run_rbk_cau_backtest
 from app.utils.date_util import spec_weekday_to_python
 from app.services.stats_service import (
@@ -49,6 +50,17 @@ class CandidatesPersistRequest(BaseModel):
     top: Optional[int] = Field(default=None, ge=1, le=100)
     min_filters: int = Field(default=1, ge=1, le=8)
     sort: Literal["score", "filters", "loto"] = Field(default="score")
+
+
+class IntersectionBacktestRequest(BaseModel):
+    days: int = Field(default=30, ge=1, le=365)
+    top: int = Field(default=20, ge=1, le=100)
+    min_cf_lift: Optional[float] = Field(default=None, ge=0.0)
+    min_rbk_cau: Optional[int] = Field(default=None, ge=1)
+    strategy: Literal["intersection", "cf_only", "rbk_only"] = Field(default="intersection")
+    fallback: Literal["cf_only", "rbk_only", "none"] = Field(default="cf_only")
+    rbk_limit: int = Field(default=5, ge=1, le=9)
+    compare_strategies: bool = Field(default=True)
 
 
 @router.get("/pairs")
@@ -191,6 +203,70 @@ def rbk_cau(
     min_cau: int = Query(default=1, ge=1),
 ):
     return get_rbk_cau(date_str=date, limit=limit, min_cau=min_cau)
+
+
+@router.get("/intersection")
+def intersection(
+    target_date: Optional[str] = Query(default=None),
+    top: int = Query(default=20, ge=1, le=100),
+    min_cf_lift: float = Query(default=3.0, ge=0.0),
+    min_rbk_cau: int = Query(default=4, ge=1),
+    strategy: Literal["intersection", "cf_only", "rbk_only"] = Query(default="intersection"),
+    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="cf_only"),
+    rbk_limit: int = Query(default=5, ge=1, le=9),
+    min_occ: int = Query(default=2, ge=1),
+):
+    try:
+        return build_intersection(
+            target_date=target_date,
+            top=top,
+            min_cf_lift=min_cf_lift,
+            min_rbk_cau=min_rbk_cau,
+            strategy=strategy,
+            fallback=fallback,
+            rbk_limit=rbk_limit,
+            min_occ=min_occ,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/intersection/evaluate")
+def intersection_evaluate(
+    target_date: str = Query(..., description="Ngày đã có KQXS"),
+    top: int = Query(default=20, ge=1, le=100),
+    min_cf_lift: float = Query(default=3.0, ge=0.0),
+    min_rbk_cau: int = Query(default=4, ge=1),
+    strategy: Literal["intersection", "cf_only", "rbk_only"] = Query(default="intersection"),
+    fallback: Literal["cf_only", "rbk_only", "none"] = Query(default="cf_only"),
+    rbk_limit: int = Query(default=5, ge=1, le=9),
+):
+    try:
+        return evaluate_intersection(
+            target_date=target_date,
+            top=top,
+            min_cf_lift=min_cf_lift,
+            min_rbk_cau=min_rbk_cau,
+            strategy=strategy,
+            fallback=fallback,
+            rbk_limit=rbk_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/intersection/backtest")
+def intersection_backtest(body: IntersectionBacktestRequest):
+    return run_intersection_backtest(
+        days=body.days,
+        top=body.top,
+        min_cf_lift=body.min_cf_lift,
+        min_rbk_cau=body.min_rbk_cau,
+        strategy=body.strategy,
+        fallback=body.fallback,
+        rbk_limit=body.rbk_limit,
+        compare_strategies=body.compare_strategies,
+    )
 
 
 @router.get("/candidates")
