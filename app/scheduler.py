@@ -1,5 +1,4 @@
 import logging
-from datetime import date
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -19,25 +18,8 @@ def _import_kqxs_today():
     if import_mb_day(day):
         draw_repo.refresh_loto_view()
         logger.info("Scheduled XSMB import finished for %s", day)
-        _predict_next_day()
     else:
         logger.warning("Scheduled XSMB import failed for %s", day)
-
-
-def _predict_next_day():
-    from app.prediction.features import clear_feature_cache
-    from app.prediction.service import compute_next
-
-    try:
-        clear_feature_cache()
-        result = compute_next(persist=True)
-        logger.info(
-            "Prediction saved for %s (%s top loto)",
-            result.get("target_date"),
-            len(result.get("predictions", [])),
-        )
-    except Exception as exc:
-        logger.warning("Scheduled prediction failed: %s", exc)
 
 
 def _import_chotkq_today():
@@ -100,12 +82,6 @@ def create_scheduler() -> BackgroundScheduler:
         _import_rss_mt,
         CronTrigger(hour=19, minute=0),
         id="rssmt",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _predict_next_day,
-        CronTrigger(hour=19, minute=5),
-        id="predictions",
         replace_existing=True,
     )
     return scheduler

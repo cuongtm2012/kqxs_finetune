@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import close_pool, fetch_one, init_pool
-from app.routers import analytics, kqxs, predictions, rbk, ums
+from app.routers import analytics, kqxs, rbk, stats, ums
 from app.scheduler import create_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -43,7 +43,7 @@ app.include_router(kqxs.router)
 app.include_router(rbk.router)
 app.include_router(ums.router)
 app.include_router(analytics.router)
-app.include_router(predictions.router)
+app.include_router(stats.router)
 
 
 @app.get("/health")
