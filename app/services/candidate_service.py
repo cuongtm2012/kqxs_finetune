@@ -3,13 +3,14 @@ import random
 import time
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from app.db import fetch_all
-from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
 from app.prediction.constants import TARGET_LOTO
+from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
 from app.services.stats_service import (
     CANDIDATES_DISCLAIMER,
+    WEEKDAYS_VI,
     approaching_max_cycle_matches,
     calendar_bias_matches,
     get_day_context,
@@ -19,7 +20,34 @@ from app.services.stats_service import (
 
 logger = logging.getLogger(__name__)
 
+CandidateSort = Literal["score", "filters", "loto"]
 FilterMatch = tuple[str, str, Optional[dict]]
+
+FILTER_KEYS = {
+    "lag-1 pair": "lag-1",
+    "same-day pair": "same-day",
+    "max-cycle": "max-cycle",
+    "calendar bias": "calendar",
+    "lo-roi": "lo-roi",
+}
+
+
+def _score_contribution(filter_name: str, detail: dict) -> float:
+    key = FILTER_KEYS[filter_name]
+    lift = float(detail.get("lift", 1))
+    if key in ("lag-1", "same-day"):
+        return min((lift - 1) * 2, 0.5)
+    if key == "max-cycle":
+        return detail.get("pct_of_max", 0) / 100.0
+    if key == "calendar":
+        return min((lift - 1) * 3, 0.5)
+    if key == "lo-roi":
+        return (lift - 1) * 1
+    return 0.0
+
+
+def _compute_score(breakdown: dict[str, float]) -> float:
+    return round(sum(breakdown.values()), 2)
 
 
 def _resolve_dates(target_date: Optional[str]) -> tuple[str, str]:
@@ -94,12 +122,9 @@ def _same_day_matches(yesterday_lotos: set[str], min_lift: float = 1.10) -> list
 def _max_cycle_matches(min_pct: int = 70) -> list[FilterMatch]:
     matches: list[FilterMatch] = []
     for lot, summary in approaching_max_cycle_matches(min_pct=min_pct).items():
-        gaps = summary["gaps"]
-        cur_gap = summary["current_gap"]
-        times_exceeded = sum(1 for g in gaps if g > cur_gap)
         reason = (
-            f"max-cycle: current gap {cur_gap}/{summary['max_gap_hist']} ngày "
-            f"({summary['pct_of_max']}% max cycle, chỉ vượt {times_exceeded} lần)"
+            f"max-cycle: current gap {summary['current_gap']}/{summary['max_gap_hist']} ngày "
+            f"({summary['pct_of_max']}%)"
         )
         matches.append((lot, reason, summary))
     return matches
@@ -125,17 +150,26 @@ def _lo_roi_matches(yesterday_de: str, window: int = 3) -> list[FilterMatch]:
         if row["lift"] <= 1.0:
             continue
         reason = (
-            f"lo-roi: sau đề {yesterday_de} loto {row['loto']} rơi {row['falls']}/{row['occurrences']} "
-            f"(prob {row['prob']:.1%}, lift {row['lift']}x)"
+            f"lô rơi: sau đề {yesterday_de} loto {row['loto']} rơi {row['prob']:.1%} "
+            f"(lift {row['lift']}x)"
         )
         matches.append((row["loto"], reason, row))
     return matches
 
 
+def _sort_candidates(candidates: list[dict], sort: CandidateSort) -> list[dict]:
+    if sort == "score":
+        return sorted(candidates, key=lambda c: (-c["score"], c["loto"]))
+    if sort == "filters":
+        return sorted(candidates, key=lambda c: (-c["filters_matched"], -c["score"], c["loto"]))
+    return sorted(candidates, key=lambda c: c["loto"])
+
+
 def build_candidates(
     target_date: Optional[str] = None,
     top: int = 20,
-    min_filters: int = 2,
+    min_filters: int = 1,
+    sort: CandidateSort = "score",
     include_reasons: bool = True,
     include_pair_detail: bool = False,
 ) -> dict:
@@ -159,11 +193,12 @@ def build_candidates(
         {"name": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
     ]
 
-    candidate_reasons: dict[str, list[str]] = defaultdict(list)
-    candidate_details: dict[str, dict] = defaultdict(dict)
+    loto_filters: dict[str, dict[str, dict]] = defaultdict(dict)
     filters_applied = []
 
     for filter_def in filter_defs:
+        filter_name = filter_def["name"]
+        filter_key = FILTER_KEYS[filter_name]
         matched = filter_def["fn"]()
         per_filter: dict[str, FilterMatch] = {}
         for lot, reason, detail in matched:
@@ -173,38 +208,44 @@ def build_candidates(
         filter_matches = list(per_filter.values())
         filters_applied.append(
             {
-                "name": filter_def["name"],
+                "name": filter_name,
                 **{k: v for k, v in filter_def.items() if k not in ("name", "fn")},
                 "matched": len(filter_matches),
             }
         )
         for lot, reason, detail in filter_matches:
-            candidate_reasons[lot].append(reason)
-            if include_pair_detail and detail:
-                candidate_details[lot][filter_def["name"]] = detail
+            contribution = round(_score_contribution(filter_name, detail or {}), 2)
+            loto_filters[lot][filter_key] = {
+                "reason": reason,
+                "score_contribution": contribution,
+                "detail": detail,
+            }
 
     candidates = []
-    for lot, reasons in candidate_reasons.items():
-        if len(reasons) < min_filters:
+    for lot, filters in loto_filters.items():
+        if len(filters) < min_filters:
             continue
+        breakdown = {k: v["score_contribution"] for k, v in filters.items()}
         entry = {
             "loto": lot,
-            "filters_matched": len(reasons),
+            "score": _compute_score(breakdown),
+            "filters_matched": len(filters),
+            "score_breakdown": breakdown,
         }
         if include_reasons:
-            entry["reasons"] = reasons
+            entry["reasons"] = [filters[k]["reason"] for k in sorted(filters.keys())]
         if include_pair_detail:
-            entry["filter_details"] = candidate_details.get(lot, {})
+            entry["filter_details"] = {k: filters[k]["detail"] for k in filters}
         candidates.append(entry)
 
-    candidates.sort(key=lambda c: (-c["filters_matched"], c["loto"]))
-    candidates = candidates[:top]
+    candidates = _sort_candidates(candidates, sort)[:top]
 
     avg_filters = (
         round(sum(c["filters_matched"] for c in candidates) / len(candidates), 1)
         if candidates
         else 0.0
     )
+    avg_score = round(sum(c["score"] for c in candidates) / len(candidates), 2) if candidates else 0.0
     elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
     if elapsed_ms > 1000:
         logger.warning("candidates query slow: %dms target_date=%s", elapsed_ms, target_str)
@@ -217,15 +258,18 @@ def build_candidates(
         "context": {
             "yesterday_lotos": sorted(yesterday_lotos),
             "yesterday_de": yesterday_de,
-            "target_weekday": weekday,
+            "target_weekday": WEEKDAYS_VI[weekday],
         },
         "candidates": candidates,
         "filters_applied": filters_applied,
         "meta": {
             "total_candidates": len(candidates),
-            "total_lotos_scanned": len(candidate_reasons),
+            "total_lotos_scanned": len(loto_filters),
             "filters_run": len(filter_defs),
             "avg_filters_per_candidate": avg_filters,
+            "avg_score": avg_score,
+            "scoring_method": "lift-weighted (mỗi filter scale khác nhau)",
+            "sort": sort,
             "query_time_ms": elapsed_ms,
         },
     }
@@ -251,10 +295,11 @@ def _random_baseline_loto(top_k: int, trials: int = 5000) -> tuple[float, float]
     return hit_sum / trials, recall_sum / trials
 
 
-def _backtest_min_filters(
+def _backtest_config(
     target_dates: list[date],
     top: int,
     min_filters: int,
+    sort: CandidateSort,
 ) -> dict:
     hit_sum = 0.0
     recall_sum = 0.0
@@ -267,6 +312,7 @@ def _backtest_min_filters(
                 target_date=target_dt.isoformat(),
                 top=top,
                 min_filters=min_filters,
+                sort=sort,
                 include_reasons=False,
             )
         except ValueError:
@@ -291,7 +337,7 @@ def _backtest_min_filters(
 def run_candidates_backtest(
     days: int = 90,
     top: int = 20,
-    min_filters: int = 2,
+    min_filters: int = 1,
 ) -> dict:
     start_ms = time.perf_counter()
     rows = fetch_all(
@@ -306,12 +352,14 @@ def run_candidates_backtest(
     rand_hit, rand_recall = _random_baseline_loto(top)
     results = []
 
-    for mf in sorted({min_filters, 2, 3}):
-        stats = _backtest_min_filters(target_dates, top, mf)
+    configs = sorted({min_filters, 1, 2, 3})
+    for mf in configs:
+        sort_mode: CandidateSort = "score" if mf == 1 else "filters"
+        stats = _backtest_config(target_dates, top, mf, sort_mode)
         lift = stats["recall"] / rand_recall if rand_recall > 0 else 0.0
         results.append(
             {
-                "model": f"candidates (min_filters={mf})",
+                "model": f"candidates (min_filters={mf}, sort={sort_mode})",
                 f"hit_rate@{top}": round(stats["hit_rate"], 3),
                 f"recall@{top}": round(stats["recall"], 3),
                 "lift": round(lift, 2),
@@ -335,5 +383,8 @@ def run_candidates_backtest(
         "disclaimer": CANDIDATES_DISCLAIMER,
         "params": {"days": days, "top": top, "min_filters": min_filters},
         "results": results,
-        "meta": {"query_time_ms": elapsed_ms, "date_range": [target_dates[0].isoformat(), target_dates[-1].isoformat()] if target_dates else []},
+        "meta": {
+            "query_time_ms": elapsed_ms,
+            "date_range": [target_dates[0].isoformat(), target_dates[-1].isoformat()] if target_dates else [],
+        },
     }

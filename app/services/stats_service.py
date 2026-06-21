@@ -19,7 +19,7 @@ DISCLAIMER = (
 )
 
 CANDIDATES_DISCLAIMER = (
-    "Stats-based candidate pool. Không phải dự đoán. Lift tối đa ~1.15x so với random."
+    "Stats-based candidate pool. Lift-weighted score. Không phải dự đoán."
 )
 
 GAP_DISCLAIMER = (
