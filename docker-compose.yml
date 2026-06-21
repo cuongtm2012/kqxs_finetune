@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rbk-postgres
+    environment:
+      POSTGRES_USER: rbk
+      POSTGRES_PASSWORD: rbk
+      POSTGRES_DB: rbk
+    ports:
+      - "5436:5432"
+    volumes:
+      - rbk_pg_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rbk -d rbk"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rbk_pg_data:

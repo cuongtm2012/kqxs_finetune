@@ -1,0 +1,64 @@
+"""Prediction engine constants."""
+
+DISCLAIMER = "Statistical ranking only. Not guaranteed."
+
+TARGET_LOTO = "loto"
+TARGET_DE = "de"
+TARGET_DAU = "dau"
+TARGET_DIT = "dit"
+
+TARGET_TYPES = (TARGET_LOTO, TARGET_DE, TARGET_DAU, TARGET_DIT)
+
+DEFAULT_TOP = {
+    TARGET_LOTO: 20,
+    TARGET_DE: 10,
+    TARGET_DAU: 5,
+    TARGET_DIT: 5,
+}
+
+ALL_LOTOS = [f"{i:02d}" for i in range(100)]
+ALL_DIGITS = [str(i) for i in range(10)]
+
+MODEL_FREQUENCY = "frequency"
+MODEL_EWMA = "ewma"
+MODEL_GAP = "gap"
+MODEL_MARKOV = "markov"
+MODEL_BAYESIAN = "bayesian"
+MODEL_WEEKDAY = "weekday"
+MODEL_DIGIT = "digit"
+MODEL_ENSEMBLE = "ensemble"
+
+ALL_MODELS = (
+    MODEL_FREQUENCY,
+    MODEL_EWMA,
+    MODEL_GAP,
+    MODEL_MARKOV,
+    MODEL_BAYESIAN,
+    MODEL_WEEKDAY,
+    MODEL_DIGIT,
+    MODEL_ENSEMBLE,
+)
+
+LOTO_DE_MODELS = (
+    MODEL_FREQUENCY,
+    MODEL_EWMA,
+    MODEL_GAP,
+    MODEL_MARKOV,
+    MODEL_BAYESIAN,
+    MODEL_WEEKDAY,
+)
+
+DEFAULT_ENSEMBLE_WEIGHTS = {
+    MODEL_FREQUENCY: 0.15,
+    MODEL_EWMA: 0.25,
+    MODEL_GAP: 0.10,
+    MODEL_MARKOV: 0.15,
+    MODEL_BAYESIAN: 0.20,
+    MODEL_WEEKDAY: 0.10,
+    MODEL_DIGIT: 0.05,
+}
+
+EWMA_LAMBDA = 0.98
+BAYESIAN_ALPHA = 1.0
+BAYESIAN_BETA = 1.0
+WEEKDAY_MIN_SAMPLES = 30

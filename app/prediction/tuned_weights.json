@@ -1,0 +1,92 @@
+{
+  "loto": {
+    "target_type": "loto",
+    "top_k": 20,
+    "period": {"from": "2020-01-01", "to": "2025-12-31"},
+    "weights": {
+      "frequency": 0.0716,
+      "ewma": 0.4468,
+      "gap": 0.0253,
+      "markov": 0.0711,
+      "bayesian": 0.0864,
+      "weekday": 0.1465,
+      "digit": 0.1523
+    },
+    "ensemble_metrics": {
+      "hit_rate": 0.9977,
+      "recall_at_k": 0.2034,
+      "days": 2146
+    },
+    "solo_metrics": {
+      "frequency": {"recall_at_k": 0.1981, "hit_rate": 0.9967},
+      "ewma": {"recall_at_k": 0.2037, "hit_rate": 0.9986},
+      "gap": {"recall_at_k": 0.2001, "hit_rate": 0.9977},
+      "markov": {"recall_at_k": 0.198, "hit_rate": 0.9972},
+      "bayesian": {"recall_at_k": 0.1981, "hit_rate": 0.9967},
+      "weekday": {"recall_at_k": 0.1998, "hit_rate": 0.9967},
+      "digit": {"recall_at_k": 0.2023, "hit_rate": 0.9986}
+    }
+  },
+  "de": {
+    "target_type": "de",
+    "top_k": 10,
+    "period": {"from": "2020-01-01", "to": "2025-12-31"},
+    "weights": {
+      "frequency": 0.1066,
+      "ewma": 0.2415,
+      "gap": 0.0406,
+      "markov": 0.307,
+      "bayesian": 0.1712,
+      "weekday": 0.1333
+    },
+    "ensemble_metrics": {
+      "hit_rate": 0.1146,
+      "recall_at_k": 0.1146,
+      "days": 2146
+    },
+    "solo_metrics": {
+      "frequency": {"recall_at_k": 0.1048, "hit_rate": 0.1048},
+      "ewma": {"recall_at_k": 0.0969, "hit_rate": 0.0969},
+      "gap": {"recall_at_k": 0.1025, "hit_rate": 0.1025},
+      "markov": {"recall_at_k": 0.1118, "hit_rate": 0.1118},
+      "bayesian": {"recall_at_k": 0.1048, "hit_rate": 0.1048},
+      "weekday": {"recall_at_k": 0.1062, "hit_rate": 0.1062}
+    }
+  },
+  "dau": {
+    "target_type": "dau",
+    "top_k": 5,
+    "period": {"from": "2020-01-01", "to": "2025-12-31"},
+    "weights": {
+      "frequency": 0.1159,
+      "ewma": 0.2259,
+      "gap": 0.1689,
+      "markov": 0.2772,
+      "bayesian": 0.0287,
+      "weekday": 0.1834
+    },
+    "ensemble_metrics": {
+      "hit_rate": 1.0,
+      "recall_at_k": 0.5046,
+      "days": 800
+    }
+  },
+  "dit": {
+    "target_type": "dit",
+    "top_k": 5,
+    "period": {"from": "2020-01-01", "to": "2025-12-31"},
+    "weights": {
+      "frequency": 0.0797,
+      "ewma": 0.4769,
+      "gap": 0.1627,
+      "markov": 0.0434,
+      "bayesian": 0.1276,
+      "weekday": 0.1098
+    },
+    "ensemble_metrics": {
+      "hit_rate": 1.0,
+      "recall_at_k": 0.5058,
+      "days": 800
+    }
+  }
+}
