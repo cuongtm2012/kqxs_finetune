@@ -1493,6 +1493,667 @@ def frequency_hot_matches(min_lift: float = 1.05) -> dict[str, dict]:
     return matches
 
 
+DEFAULT_FREQ_WINDOWS = (30, 50, 100, 200, 300)
+DE_MAX_FREQ_WINDOW_DAYS = 365 * 5  # 5 năm
+DEFAULT_DE_FREQ_WINDOWS = (365, 730, 1095, DE_MAX_FREQ_WINDOW_DAYS)
+FreqRankSort = Literal["hot", "cold"]
+
+
+def _normalize_de_windows(windows: Optional[list[int]]) -> list[int]:
+    raw = list(windows or DEFAULT_DE_FREQ_WINDOWS)
+    cleaned = sorted({w for w in raw if w > 0})
+    if not cleaned:
+        cleaned = list(DEFAULT_DE_FREQ_WINDOWS)
+    over = [w for w in cleaned if w > DE_MAX_FREQ_WINDOW_DAYS]
+    if over:
+        raise ValueError(f"Đề chỉ dùng window ≤ {DE_MAX_FREQ_WINDOW_DAYS} ngày (5 năm), nhận: {over}")
+    return cleaned
+
+
+def _loto_counts_in_window(draw_dates: list[str]) -> tuple[dict[str, int], float]:
+    if not draw_dates:
+        return {}, 0.0
+    date_set = set(draw_dates)
+    loto_hits = _all_loto_hits()
+    counts: dict[str, int] = {}
+    for lot in range(100):
+        lot_str = f"{lot:02d}"
+        counts[lot_str] = sum(1 for d in loto_hits.get(lot_str, []) if d in date_set)
+    baseline = sum(counts.values()) / 100.0
+    return counts, baseline
+
+
+def _build_freq_rank_rows(
+    counts: dict[str, int],
+    window_days: int,
+    baseline_count: float,
+    draw_dates: list[str],
+) -> list[dict]:
+    date_to_idx = _date_index(draw_dates)
+    loto_hits = _all_loto_hits()
+    rows: list[dict] = []
+    for lot, count in counts.items():
+        rate = count / window_days if window_days else 0.0
+        lift = count / baseline_count if baseline_count > 0 else 0.0
+        summary = _loto_summary(loto_hits.get(lot, []), draw_dates, date_to_idx)
+        rows.append(
+            {
+                "loto": lot,
+                "count": count,
+                "window_days": window_days,
+                "rate_pct": round(rate * 100, 1),
+                "baseline_count": round(baseline_count, 2),
+                "lift": _round_lift(lift),
+                "current_gap": summary.get("current_gap", 0),
+                "last_seen": summary.get("last_seen"),
+            }
+        )
+    return rows
+
+
+def get_loto_frequency_rank(
+    window: int = 30,
+    limit: int = 20,
+    sort: FreqRankSort = "hot",
+) -> dict:
+    start_ms = time.perf_counter()
+    draw_dates = _draw_dates(window)
+    window_days = len(draw_dates)
+    counts, baseline = _loto_counts_in_window(draw_dates)
+    rows = _build_freq_rank_rows(counts, window_days, baseline, draw_dates)
+    rows.sort(key=lambda r: (-r["count"], -r["lift"], r["loto"]))
+    hot = rows[:limit]
+    cold = sorted(rows, key=lambda r: (r["count"], r["lift"], r["loto"]))[:limit]
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-rank",
+        "type": "loto",
+        "window": window,
+        "window_days": window_days,
+        "period_from": draw_dates[0] if draw_dates else None,
+        "period_to": draw_dates[-1] if draw_dates else None,
+        "baseline_count": round(baseline, 2),
+        "baseline_rate_pct": round(baseline / window_days * 100, 1) if window_days else 0.0,
+        "hot": hot,
+        "cold": cold,
+        "sort": sort,
+        "meta": {"query_time_ms": elapsed_ms, "disclaimer": DISCLAIMER},
+    }
+
+
+def get_de_frequency_rank(
+    window: int = 730,
+    limit: int = 20,
+    sort: FreqRankSort = "hot",
+) -> dict:
+    if window > DE_MAX_FREQ_WINDOW_DAYS:
+        raise ValueError(f"Đề window tối đa {DE_MAX_FREQ_WINDOW_DAYS} ngày (5 năm)")
+    start_ms = time.perf_counter()
+    draw_dates = _draw_dates(window)
+    window_days = len(draw_dates)
+    if not draw_dates:
+        return {
+            "module": "frequency-rank",
+            "type": "de",
+            "window": window,
+            "window_days": 0,
+            "hot": [],
+            "cold": [],
+            "meta": {"query_time_ms": 0},
+        }
+    rows = fetch_all(
+        """
+        SELECT p.last_two AS de, COUNT(*)::int AS count
+        FROM draws d
+        JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB'
+          AND p.prize_level = 'DB'
+          AND d.draw_date >= %s AND d.draw_date <= %s
+        GROUP BY p.last_two
+        """,
+        (draw_dates[0], draw_dates[-1]),
+    )
+    counts = {f"{i:02d}": 0 for i in range(100)}
+    for row in rows:
+        counts[row["de"]] = row["count"]
+    baseline = window_days / 100.0
+    rank_rows: list[dict] = []
+    for de, count in counts.items():
+        rate = count / window_days if window_days else 0.0
+        lift = count / baseline if baseline > 0 else 0.0
+        rank_rows.append(
+            {
+                "de": de,
+                "count": count,
+                "window_days": window_days,
+                "rate_pct": round(rate * 100, 2),
+                "baseline_count": round(baseline, 2),
+                "lift": _round_lift(lift),
+            }
+        )
+    rank_rows.sort(key=lambda r: (-r["count"], -r["lift"], r["de"]))
+    hot = rank_rows[:limit]
+    cold = sorted(rank_rows, key=lambda r: (r["count"], r["lift"], r["de"]))[:limit]
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-rank",
+        "type": "de",
+        "window": window,
+        "window_days": window_days,
+        "period_from": draw_dates[0],
+        "period_to": draw_dates[-1],
+        "baseline_count": round(baseline, 2),
+        "baseline_rate_pct": round(baseline / window_days * 100, 2) if window_days else 0.0,
+        "hot": hot,
+        "cold": cold,
+        "sort": sort,
+        "meta": {"query_time_ms": elapsed_ms, "disclaimer": DISCLAIMER},
+    }
+
+
+def get_loto_frequency_summary(
+    windows: Optional[list[int]] = None,
+    limit: int = 10,
+) -> dict:
+    start_ms = time.perf_counter()
+    windows = windows or list(DEFAULT_DE_FREQ_WINDOWS)
+    by_window: dict[str, dict] = {}
+    for window in windows:
+        rank = get_loto_frequency_rank(window=window, limit=limit, sort="hot")
+        by_window[str(window)] = {
+            "window_days": rank["window_days"],
+            "period_from": rank["period_from"],
+            "period_to": rank["period_to"],
+            "baseline_count": rank["baseline_count"],
+            "baseline_rate_pct": rank["baseline_rate_pct"],
+            "hot": rank["hot"],
+            "cold": rank["cold"],
+        }
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-summary",
+        "type": "loto",
+        "windows": by_window,
+        "meta": {"query_time_ms": elapsed_ms},
+    }
+
+
+def _loto_window_profiles(windows: list[int]) -> dict[str, dict[str, dict]]:
+    profiles: dict[str, dict[str, dict]] = {
+        f"{i:02d}": {} for i in range(100)
+    }
+    for window in windows:
+        draw_dates = _draw_dates(window)
+        window_days = len(draw_dates)
+        counts, baseline = _loto_counts_in_window(draw_dates)
+        for lot, count in counts.items():
+            rate = count / window_days if window_days else 0.0
+            profiles[lot][str(window)] = {
+                "count": count,
+                "rate_pct": round(rate * 100, 1),
+                "lift": _round_lift(count / baseline if baseline > 0 else 0.0),
+            }
+    return profiles
+
+
+def _trend_label(momentum_pp: float) -> str:
+    if momentum_pp >= 8:
+        return "heating_fast"
+    if momentum_pp >= 3:
+        return "heating"
+    if momentum_pp <= -8:
+        return "cooling_fast"
+    if momentum_pp <= -3:
+        return "cooling"
+    return "stable"
+
+
+def get_loto_frequency_trend(
+    windows: Optional[list[int]] = None,
+    limit: int = 20,
+) -> dict:
+    start_ms = time.perf_counter()
+    windows = sorted(windows or list(DEFAULT_FREQ_WINDOWS))
+    if len(windows) < 2:
+        raise ValueError("Need at least 2 windows for trend analysis")
+
+    short_w, long_w = windows[0], windows[-1]
+    profiles = _loto_window_profiles(windows)
+    rows: list[dict] = []
+    for lot in sorted(profiles.keys()):
+        wdata = profiles[lot]
+        short_rate = wdata.get(str(short_w), {}).get("rate_pct", 0.0)
+        long_rate = wdata.get(str(long_w), {}).get("rate_pct", 0.0)
+        momentum = round(short_rate - long_rate, 1)
+        rows.append(
+            {
+                "loto": lot,
+                "windows": wdata,
+                "momentum_pp": momentum,
+                "short_window": short_w,
+                "long_window": long_w,
+                "trend": _trend_label(momentum),
+            }
+        )
+
+    trending_up = sorted(
+        [r for r in rows if r["momentum_pp"] > 0],
+        key=lambda r: (-r["momentum_pp"], -r["windows"].get(str(short_w), {}).get("count", 0), r["loto"]),
+    )[:limit]
+    trending_down = sorted(
+        [r for r in rows if r["momentum_pp"] < 0],
+        key=lambda r: (r["momentum_pp"], r["windows"].get(str(short_w), {}).get("count", 0), r["loto"]),
+    )[:limit]
+    stable_hot = sorted(
+        [
+            r
+            for r in rows
+            if r["windows"].get(str(long_w), {}).get("rate_pct", 0) >= 30
+            and r["windows"].get(str(short_w), {}).get("rate_pct", 0) >= 28
+        ],
+        key=lambda r: -r["windows"].get(str(short_w), {}).get("count", 0),
+    )[:limit]
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-trend",
+        "type": "loto",
+        "windows": windows,
+        "trending_up": trending_up,
+        "trending_down": trending_down,
+        "stable_hot": stable_hot,
+        "meta": {
+            "momentum_formula": f"rate_{short_w}d - rate_{long_w}d (điểm %)",
+            "heating_threshold_pp": 3,
+            "query_time_ms": elapsed_ms,
+            "disclaimer": DISCLAIMER,
+        },
+    }
+
+
+def frequency_trend_matches(
+    windows: Optional[list[int]] = None,
+    top_n: int = 20,
+    min_momentum_pp: float = 3.0,
+) -> dict[str, dict]:
+    trend = get_loto_frequency_trend(windows=windows, limit=top_n)
+    matches: dict[str, dict] = {}
+    for row in trend["trending_up"]:
+        if row["momentum_pp"] < min_momentum_pp:
+            continue
+        matches[row["loto"]] = {
+            **row,
+            "momentum": row["momentum_pp"],
+            "lift": 1 + row["momentum_pp"] / 100.0,
+        }
+    return matches
+
+
+def frequency_rank_hot_matches(
+    windows: tuple[int, ...] = DEFAULT_FREQ_WINDOWS,
+    top_n: int = 25,
+) -> dict[str, dict]:
+    """Loto thuộc top N hay về theo số lần xuất hiện trong từng cửa sổ ngày."""
+    matches: dict[str, dict] = {}
+    for window in windows:
+        rank = get_loto_frequency_rank(window=window, limit=top_n, sort="hot")
+        for row in rank["hot"]:
+            lot = row["loto"]
+            payload = {**row, "rank_window": window}
+            if lot not in matches or row["count"] > matches[lot]["count"]:
+                matches[lot] = payload
+    return matches
+
+
+def _de_meta(de: str) -> dict[str, str]:
+    dau = de[0]
+    dit = de[1]
+    tong = str((int(dau) + int(dit)) % 10)
+    return {"dau": dau, "dit": dit, "tong": tong}
+
+
+def _de_counts_in_window(draw_dates: list[str]) -> tuple[dict[str, int], float]:
+    if not draw_dates:
+        return {f"{i:02d}": 0 for i in range(100)}, 0.0
+    rows = fetch_all(
+        """
+        SELECT p.last_two AS de, COUNT(*)::int AS count
+        FROM draws d
+        JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB'
+          AND p.prize_level = 'DB'
+          AND d.draw_date >= %s AND d.draw_date <= %s
+        GROUP BY p.last_two
+        """,
+        (draw_dates[0], draw_dates[-1]),
+    )
+    counts = {f"{i:02d}": 0 for i in range(100)}
+    for row in rows:
+        counts[row["de"]] = row["count"]
+    baseline = len(draw_dates) / 100.0
+    return counts, baseline
+
+
+def _de_window_profiles(windows: list[int]) -> dict[str, dict[str, dict]]:
+    profiles: dict[str, dict[str, dict]] = {f"{i:02d}": {} for i in range(100)}
+    for window in windows:
+        draw_dates = _draw_dates(window)
+        window_days = len(draw_dates)
+        counts, baseline = _de_counts_in_window(draw_dates)
+        for de, count in counts.items():
+            rate = count / window_days if window_days else 0.0
+            profiles[de][str(window)] = {
+                "count": count,
+                "rate_pct": round(rate * 100, 2),
+                "lift": _round_lift(count / baseline if baseline > 0 else 0.0),
+            }
+    return profiles
+
+
+def get_de_frequency_summary(
+    windows: Optional[list[int]] = None,
+    limit: int = 10,
+) -> dict:
+    start_ms = time.perf_counter()
+    windows = _normalize_de_windows(windows)
+    by_window: dict[str, dict] = {}
+    for window in windows:
+        rank = get_de_frequency_rank(window=window, limit=limit, sort="hot")
+        hot = [{**row, **_de_meta(row["de"])} for row in rank["hot"]]
+        cold = [{**row, **_de_meta(row["de"])} for row in rank["cold"]]
+        by_window[str(window)] = {
+            "window_days": rank["window_days"],
+            "period_from": rank["period_from"],
+            "period_to": rank["period_to"],
+            "baseline_count": rank["baseline_count"],
+            "baseline_rate_pct": rank["baseline_rate_pct"],
+            "hot": hot,
+            "cold": cold,
+        }
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-summary",
+        "type": "de",
+        "windows": by_window,
+        "meta": {"query_time_ms": elapsed_ms},
+    }
+
+
+DE_STABLE_HOT_LONG_RATE = 1.5
+DE_STABLE_HOT_SHORT_RATE = 1.2
+
+
+def get_de_frequency_trend(
+    windows: Optional[list[int]] = None,
+    limit: int = 20,
+) -> dict:
+    start_ms = time.perf_counter()
+    windows = _normalize_de_windows(windows)
+    if len(windows) < 2:
+        raise ValueError("Need at least 2 windows for trend analysis")
+
+    short_w, long_w = windows[0], windows[-1]
+    profiles = _de_window_profiles(windows)
+    rows: list[dict] = []
+    for de in sorted(profiles.keys()):
+        wdata = profiles[de]
+        short_rate = wdata.get(str(short_w), {}).get("rate_pct", 0.0)
+        long_rate = wdata.get(str(long_w), {}).get("rate_pct", 0.0)
+        momentum = round(short_rate - long_rate, 2)
+        rows.append(
+            {
+                "de": de,
+                **_de_meta(de),
+                "windows": wdata,
+                "momentum_pp": momentum,
+                "short_window": short_w,
+                "long_window": long_w,
+                "trend": _trend_label(momentum),
+            }
+        )
+
+    trending_up = sorted(
+        [r for r in rows if r["momentum_pp"] > 0],
+        key=lambda r: (-r["momentum_pp"], -r["windows"].get(str(short_w), {}).get("count", 0), r["de"]),
+    )[:limit]
+    trending_down = sorted(
+        [r for r in rows if r["momentum_pp"] < 0],
+        key=lambda r: (r["momentum_pp"], r["windows"].get(str(short_w), {}).get("count", 0), r["de"]),
+    )[:limit]
+    stable_hot = sorted(
+        [
+            r
+            for r in rows
+            if r["windows"].get(str(long_w), {}).get("rate_pct", 0) >= DE_STABLE_HOT_LONG_RATE
+            and r["windows"].get(str(short_w), {}).get("rate_pct", 0) >= DE_STABLE_HOT_SHORT_RATE
+        ],
+        key=lambda r: -r["windows"].get(str(short_w), {}).get("count", 0),
+    )[:limit]
+
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "frequency-trend",
+        "type": "de",
+        "windows": windows,
+        "trending_up": trending_up,
+        "trending_down": trending_down,
+        "stable_hot": stable_hot,
+        "meta": {
+            "momentum_formula": f"rate_{short_w}d - rate_{long_w}d (điểm %)",
+            "heating_threshold_pp": 0.8,
+            "max_window_days": DE_MAX_FREQ_WINDOW_DAYS,
+            "stable_hot_threshold": {
+                "short_rate_pct": DE_STABLE_HOT_SHORT_RATE,
+                "long_rate_pct": DE_STABLE_HOT_LONG_RATE,
+            },
+            "query_time_ms": elapsed_ms,
+            "disclaimer": DISCLAIMER,
+        },
+    }
+
+
+def de_frequency_trend_matches(
+    windows: Optional[list[int]] = None,
+    top_n: int = 20,
+    min_momentum_pp: float = 0.8,
+) -> dict[str, dict]:
+    trend = get_de_frequency_trend(windows=windows, limit=top_n)
+    matches: dict[str, dict] = {}
+    for row in trend["trending_up"]:
+        if row["momentum_pp"] < min_momentum_pp:
+            continue
+        matches[row["de"]] = {
+            **row,
+            "momentum": row["momentum_pp"],
+            "lift": 1 + row["momentum_pp"] / 100.0,
+        }
+    for row in trend["stable_hot"]:
+        de = row["de"]
+        if de in matches:
+            continue
+        short_rate = row["windows"].get(str(trend["windows"][0]), {}).get("rate_pct", 0.0)
+        matches[de] = {
+            **row,
+            "momentum": row.get("momentum_pp", 0),
+            "lift": 1 + short_rate / 100.0,
+            "stable_hot": True,
+        }
+    return matches
+
+
+def de_frequency_rank_hot_matches(
+    windows: tuple[int, ...] = DEFAULT_DE_FREQ_WINDOWS,
+    top_n: int = 25,
+) -> dict[str, dict]:
+    matches: dict[str, dict] = {}
+    for window in windows:
+        rank = get_de_frequency_rank(window=window, limit=top_n, sort="hot")
+        for row in rank["hot"]:
+            de = row["de"]
+            payload = {**row, **_de_meta(de), "rank_window": window}
+            if de not in matches or row["count"] > matches[de]["count"]:
+                matches[de] = payload
+    return matches
+
+
+def _de_digit_counts_in_window(draw_dates: list[str]) -> tuple[dict[str, int], dict[str, int], int]:
+    if not draw_dates:
+        return {str(i): 0 for i in range(10)}, {str(i): 0 for i in range(10)}, 0
+    rows = fetch_all(
+        """
+        SELECT
+            p.first_digit::text AS dau,
+            ((p.first_digit::int + p.last_digit::int) %% 10)::text AS tong,
+            COUNT(*)::int AS count
+        FROM draws d
+        JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB'
+          AND p.prize_level = 'DB'
+          AND p.first_digit IS NOT NULL
+          AND p.last_digit IS NOT NULL
+          AND d.draw_date >= %s AND d.draw_date <= %s
+        GROUP BY p.first_digit, ((p.first_digit::int + p.last_digit::int) %% 10)
+        """,
+        (draw_dates[0], draw_dates[-1]),
+    )
+    dau_counts = {str(i): 0 for i in range(10)}
+    tong_counts = {str(i): 0 for i in range(10)}
+    for row in rows:
+        dau_counts[row["dau"]] += row["count"]
+        tong_counts[row["tong"]] += row["count"]
+    return dau_counts, tong_counts, len(draw_dates)
+
+
+def _de_digit_window_profiles(windows: list[int]) -> tuple[dict[str, dict[str, dict]], dict[str, dict[str, dict]]]:
+    dau_profiles: dict[str, dict[str, dict]] = {str(i): {} for i in range(10)}
+    tong_profiles: dict[str, dict[str, dict]] = {str(i): {} for i in range(10)}
+    for window in windows:
+        draw_dates = _draw_dates(window)
+        window_days = len(draw_dates)
+        dau_counts, tong_counts, _ = _de_digit_counts_in_window(draw_dates)
+        dau_baseline = window_days / 10.0 if window_days else 0.0
+        tong_baseline = window_days / 10.0 if window_days else 0.0
+        for digit in range(10):
+            d = str(digit)
+            dau_rate = dau_counts[d] / window_days if window_days else 0.0
+            tong_rate = tong_counts[d] / window_days if window_days else 0.0
+            dau_profiles[d][str(window)] = {
+                "count": dau_counts[d],
+                "rate_pct": round(dau_rate * 100, 2),
+                "lift": _round_lift(dau_counts[d] / dau_baseline if dau_baseline else 0.0),
+            }
+            tong_profiles[d][str(window)] = {
+                "count": tong_counts[d],
+                "rate_pct": round(tong_rate * 100, 2),
+                "lift": _round_lift(tong_counts[d] / tong_baseline if tong_baseline else 0.0),
+            }
+    return dau_profiles, tong_profiles
+
+
+def get_de_digit_trend(
+    windows: Optional[list[int]] = None,
+    limit: int = 5,
+) -> dict:
+    start_ms = time.perf_counter()
+    windows = _normalize_de_windows(windows)
+    if len(windows) < 2:
+        raise ValueError("Need at least 2 windows for digit trend analysis")
+
+    short_w, long_w = windows[0], windows[-1]
+    dau_profiles, tong_profiles = _de_digit_window_profiles(windows)
+
+    def _digit_rows(profiles: dict[str, dict[str, dict]], kind: str) -> list[dict]:
+        rows: list[dict] = []
+        for digit in sorted(profiles.keys(), key=int):
+            wdata = profiles[digit]
+            short_rate = wdata.get(str(short_w), {}).get("rate_pct", 0.0)
+            long_rate = wdata.get(str(long_w), {}).get("rate_pct", 0.0)
+            momentum = round(short_rate - long_rate, 2)
+            rows.append(
+                {
+                    "digit": digit,
+                    "kind": kind,
+                    "windows": wdata,
+                    "momentum_pp": momentum,
+                    "short_window": short_w,
+                    "long_window": long_w,
+                    "trend": _trend_label(momentum),
+                }
+            )
+        return rows
+
+    dau_rows = _digit_rows(dau_profiles, "dau")
+    tong_rows = _digit_rows(tong_profiles, "tong")
+    trending_dau = sorted(
+        [r for r in dau_rows if r["momentum_pp"] > 0],
+        key=lambda r: (-r["momentum_pp"], -r["windows"].get(str(short_w), {}).get("count", 0), r["digit"]),
+    )[:limit]
+    trending_tong = sorted(
+        [r for r in tong_rows if r["momentum_pp"] > 0],
+        key=lambda r: (-r["momentum_pp"], -r["windows"].get(str(short_w), {}).get("count", 0), r["digit"]),
+    )[:limit]
+    elapsed_ms = int((time.perf_counter() - start_ms) * 1000)
+    return {
+        "module": "digit-trend",
+        "type": "de",
+        "windows": windows,
+        "dau": {"trending_up": trending_dau, "all": dau_rows},
+        "tong": {"trending_up": trending_tong, "all": tong_rows},
+        "meta": {
+            "momentum_formula": f"rate_{short_w}d - rate_{long_w}d (điểm %)",
+            "query_time_ms": elapsed_ms,
+            "disclaimer": DISCLAIMER,
+        },
+    }
+
+
+def de_digit_trend_matches(
+    windows: Optional[list[int]] = None,
+    top_n: int = 5,
+    min_momentum_pp: float = 2.0,
+) -> dict[str, dict]:
+    digit_trend = get_de_digit_trend(windows=windows, limit=top_n)
+    hot_dau = {
+        r["digit"]
+        for r in digit_trend["dau"]["trending_up"]
+        if r["momentum_pp"] >= min_momentum_pp
+    }
+    hot_tong = {
+        r["digit"]
+        for r in digit_trend["tong"]["trending_up"]
+        if r["momentum_pp"] >= min_momentum_pp
+    }
+    matches: dict[str, dict] = {}
+    for de in (f"{i:02d}" for i in range(100)):
+        meta = _de_meta(de)
+        dau_hit = meta["dau"] in hot_dau
+        tong_hit = meta["tong"] in hot_tong
+        if not dau_hit and not tong_hit:
+            continue
+        parts = []
+        if dau_hit:
+            dau_row = next(r for r in digit_trend["dau"]["trending_up"] if r["digit"] == meta["dau"])
+            parts.append(f"đầu {meta['dau']} +{dau_row['momentum_pp']}pp")
+        if tong_hit:
+            tong_row = next(r for r in digit_trend["tong"]["trending_up"] if r["digit"] == meta["tong"])
+            parts.append(f"tổng {meta['tong']} +{tong_row['momentum_pp']}pp")
+        momentum = sum(
+            r["momentum_pp"]
+            for r in digit_trend["dau"]["trending_up"] + digit_trend["tong"]["trending_up"]
+            if r["digit"] in (meta["dau"], meta["tong"])
+            and r["momentum_pp"] >= min_momentum_pp
+        )
+        matches[de] = {
+            **meta,
+            "de": de,
+            "momentum_pp": round(momentum, 2),
+            "momentum": round(momentum, 2),
+            "lift": 1 + momentum / 100.0,
+            "digit_signals": parts,
+        }
+    return matches
+
+
 def resolve_cf_weekday(
     db_loto: str,
     target_weekday: Optional[int],

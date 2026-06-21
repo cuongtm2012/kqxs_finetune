@@ -80,3 +80,5 @@ curl "http://localhost:8081/stats/gap/hot-cold?sort=gap&limit=10"
 | Candidate filters `gap-hot`, `frequency-hot` | **Done** |
 | Intersection adaptive CF + defaults | **Done** |
 | SPEC v4.3 | **Done** |
+
+> Tiếp theo: [v4.4](SPEC-stats-engine-v4.4.md) — frequency rank/trend, đề windows 5 năm, de-intersection.

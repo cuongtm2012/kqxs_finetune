@@ -18,9 +18,19 @@ from app.services.stats_service import (
     de_calendar_matches,
     de_lag1_matches,
     de_loto_boost_matches,
+    de_digit_trend_matches,
+    de_frequency_rank_hot_matches,
+    de_frequency_trend_matches,
     frequency_hot_matches,
+    frequency_rank_hot_matches,
+    frequency_trend_matches,
     gap_hot_matches,
     get_day_context,
+    get_loto_frequency_summary,
+    get_loto_frequency_trend,
+    get_de_frequency_summary,
+    get_de_frequency_trend,
+    get_de_digit_trend,
     get_lo_roi,
     get_pairs,
 )
@@ -38,7 +48,12 @@ DE_TARGET_WARNING = (
 )
 
 DE_FILTER_PRIORITY = {
+    "de-intersection": 5,
+    "de-cf": 4,
+    "de-frequency-trend": 4,
+    "de-digit-trend": 3,
     "de-loto-boost": 3,
+    "de-frequency-rank": 2,
     "de-lag1": 2,
     "de-calendar": 1,
 }
@@ -48,6 +63,11 @@ DE_MAX_MIN_FILTERS = 2
 MAX_CYCLE_MIN_PCT = 55
 GAP_HOT_MIN_GAP = 8
 FREQUENCY_HOT_MIN_LIFT = 1.05
+FREQ_RANK_TOP_N = 25
+FREQ_TREND_MIN_MOMENTUM = 3.0
+DE_FREQ_RANK_TOP_N = 15
+DE_FREQ_TREND_MIN_MOMENTUM = 0.8
+DE_DIGIT_TREND_MIN_MOMENTUM = 2.0
 
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
@@ -60,6 +80,11 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return min(detail.get("current_gap", 0) / 25.0, 0.5)
     if filter_key == "frequency-hot":
         return min((float(detail.get("lift", 1)) - 1) * 2, 0.4)
+    if filter_key == "frequency-rank":
+        return min((float(detail.get("lift", 1)) - 1) * 2, 0.5)
+    if filter_key == "frequency-trend":
+        momentum = float(detail.get("momentum_pp", detail.get("momentum", 0)))
+        return min(momentum / 20.0, 0.5)
     if filter_key in ("calendar", "de-calendar"):
         return min((lift - 1) * 3, 0.5)
     if filter_key == "lo-roi":
@@ -68,6 +93,20 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return min((lift - 1) * 3, 0.5)
     if filter_key == "de-loto-boost":
         return min((lift - 1) * 2, 0.3)
+    if filter_key == "de-intersection":
+        cf_lift = float(detail.get("cf_lift", detail.get("lift", 1)))
+        rbk_cau = int(detail.get("rbk_cau", 0))
+        return min((cf_lift - 1) * 2, 0.6) + min(rbk_cau / 8.0, 0.5)
+    if filter_key == "de-cf":
+        return min((lift - 1) * 2, 0.5)
+    if filter_key == "de-frequency-rank":
+        return min((float(detail.get("lift", 1)) - 1) * 2, 0.5)
+    if filter_key == "de-frequency-trend":
+        momentum = float(detail.get("momentum_pp", detail.get("momentum", 0)))
+        return min(momentum / 15.0, 0.5)
+    if filter_key == "de-digit-trend":
+        momentum = float(detail.get("momentum_pp", detail.get("momentum", 0)))
+        return min(momentum / 20.0, 0.4)
     if filter_key == "conditional-frequency":
         return min((lift - 1) * 2, 0.5)
     if filter_key == "rbk-cau":
@@ -181,6 +220,71 @@ def _frequency_hot_matches(min_lift: float = FREQUENCY_HOT_MIN_LIFT) -> list[Fil
     return matches
 
 
+def _frequency_rank_matches(top_n: int = FREQ_RANK_TOP_N) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for lot, info in frequency_rank_hot_matches(top_n=top_n).items():
+        reason = (
+            f"frequency-rank: loto {lot} top {top_n} hay về "
+            f"{info['count']}/{info['window_days']} ngày (window {info['rank_window']}d, "
+            f"lift {info['lift']}x)"
+        )
+        matches.append((lot, reason, info))
+    return matches
+
+
+def _frequency_trend_matches(min_momentum: float = FREQ_TREND_MIN_MOMENTUM) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for lot, info in frequency_trend_matches(min_momentum_pp=min_momentum).items():
+        short = info["short_window"]
+        long = info["long_window"]
+        w = info["windows"]
+        short_rate = w.get(str(short), {}).get("rate_pct", 0)
+        long_rate = w.get(str(long), {}).get("rate_pct", 0)
+        reason = (
+            f"frequency-trend: {lot} đang nóng lên +{info['momentum_pp']}pp "
+            f"({short}d {short_rate}% vs {long}d {long_rate}%)"
+        )
+        matches.append((lot, reason, info))
+    return matches
+
+
+def _de_frequency_rank_matches(top_n: int = DE_FREQ_RANK_TOP_N) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for de, info in de_frequency_rank_hot_matches(top_n=top_n).items():
+        reason = (
+            f"de-frequency-rank: đề {de} hot {info['rank_window']}d "
+            f"({info['count']} lần, lift {info['lift']}x, đầu {info['dau']} tổng {info['tong']})"
+        )
+        matches.append((de, reason, info))
+    return matches
+
+
+def _de_frequency_trend_matches(min_momentum: float = DE_FREQ_TREND_MIN_MOMENTUM) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for de, info in de_frequency_trend_matches(min_momentum_pp=min_momentum).items():
+        short = info["short_window"]
+        long = info["long_window"]
+        w = info["windows"]
+        short_rate = w.get(str(short), {}).get("rate_pct", 0)
+        long_rate = w.get(str(long), {}).get("rate_pct", 0)
+        tag = "stable-hot" if info.get("stable_hot") else f"+{info['momentum_pp']}pp"
+        reason = (
+            f"de-frequency-trend: đề {de} {tag} "
+            f"({short}d {short_rate}% vs {long}d {long_rate}%, đầu {info['dau']} tổng {info['tong']})"
+        )
+        matches.append((de, reason, info))
+    return matches
+
+
+def _de_digit_trend_matches(min_momentum: float = DE_DIGIT_TREND_MIN_MOMENTUM) -> list[FilterMatch]:
+    matches: list[FilterMatch] = []
+    for de, info in de_digit_trend_matches(min_momentum_pp=min_momentum).items():
+        signals = ", ".join(info.get("digit_signals", []))
+        reason = f"de-digit-trend: đề {de} — {signals}"
+        matches.append((de, reason, info))
+    return matches
+
+
 def _calendar_matches(weekday: int, min_lift: float = 1.05) -> list[FilterMatch]:
     matches: list[FilterMatch] = []
     for lot, info in calendar_bias_matches(weekday, min_lift=min_lift).items():
@@ -241,6 +345,43 @@ def _de_loto_boost_filter_matches(yesterday_lotos: set[str]) -> list[FilterMatch
         lambda lot, info: (
             f"de-loto-boost: loto {lot} về hôm qua, đề {lot} có P={info['prob']:.1%} "
             f"(lift {info['lift']}x)"
+        ),
+    )
+
+
+def _de_intersection_filter_matches(target_date: str) -> list[FilterMatch]:
+    from app.services.intersection_service import build_intersection
+
+    result = build_intersection(target_date=target_date)
+    cf_by = {row["loto"]: row for row in result["cf_candidates"]}
+    pick_by = {row["loto"]: row for row in result["final_picks"]}
+    matches: list[FilterMatch] = []
+    for lot in result["intersection"]:
+        cf = cf_by.get(lot, {})
+        pick = pick_by.get(lot, {})
+        cf_lift = cf.get("lift") or pick.get("cf_lift", 1)
+        rbk_cau = pick.get("rbk_cau", 0)
+        detail = {
+            "loto": lot,
+            "cf_lift": cf_lift,
+            "rbk_cau": rbk_cau,
+            "lift": cf_lift,
+            "yesterday_db": result["yesterday_db"],
+        }
+        reason = (
+            f"de-intersection: CF∩RBK sau đề {result['yesterday_db']} → {lot} "
+            f"(CF lift {cf_lift}x, RBK {rbk_cau} cầu)"
+        )
+        matches.append((lot, reason, detail))
+    return matches
+
+
+def _de_cf_filter_matches(yesterday_de: str, weekday: int) -> list[FilterMatch]:
+    return _dict_to_matches(
+        conditional_frequency_matches(yesterday_de, target_weekday=weekday, min_lift=3.0),
+        lambda lot, info: (
+            f"de-cf: sau ĐB {info['db_loto']} → đề {lot} "
+            f"{info['count']}/{info['total_samples']} (lift {info['lift']}x)"
         ),
     )
 
@@ -354,6 +495,8 @@ def _loto_filter_defs(
         {"key": "max-cycle", "min_pct": MAX_CYCLE_MIN_PCT, "fn": lambda: _max_cycle_matches()},
         {"key": "gap-hot", "min_gap": GAP_HOT_MIN_GAP, "fn": lambda: _gap_hot_matches()},
         {"key": "frequency-hot", "min_lift": FREQUENCY_HOT_MIN_LIFT, "fn": lambda: _frequency_hot_matches()},
+        {"key": "frequency-rank", "top_n": FREQ_RANK_TOP_N, "fn": lambda: _frequency_rank_matches()},
+        {"key": "frequency-trend", "min_momentum": FREQ_TREND_MIN_MOMENTUM, "fn": lambda: _frequency_trend_matches()},
         {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
         {"key": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
         {
@@ -365,14 +508,43 @@ def _loto_filter_defs(
     ]
 
 
-def _de_filter_defs(yesterday_lotos: set[str], yesterday_de: str, weekday: int) -> list[dict]:
+def _de_filter_defs(
+    yesterday_lotos: set[str],
+    yesterday_de: str,
+    weekday: int,
+    target_date: str,
+) -> list[dict]:
     return [
+        {
+            "key": "de-intersection",
+            "fn": lambda: _de_intersection_filter_matches(target_date),
+        },
+        {
+            "key": "de-cf",
+            "min_lift": 3.0,
+            "fn": lambda: _de_cf_filter_matches(yesterday_de, weekday),
+        },
         {"key": "de-lag1", "min_lift": 1.05, "fn": lambda: _de_lag1_filter_matches(yesterday_de)},
         {"key": "de-calendar", "min_lift": 1.05, "fn": lambda: _de_calendar_filter_matches(weekday)},
         {
             "key": "de-loto-boost",
             "min_lift": 1.05,
             "fn": lambda: _de_loto_boost_filter_matches(yesterday_lotos),
+        },
+        {
+            "key": "de-frequency-trend",
+            "min_momentum": DE_FREQ_TREND_MIN_MOMENTUM,
+            "fn": lambda: _de_frequency_trend_matches(),
+        },
+        {
+            "key": "de-frequency-rank",
+            "top_n": DE_FREQ_RANK_TOP_N,
+            "fn": lambda: _de_frequency_rank_matches(),
+        },
+        {
+            "key": "de-digit-trend",
+            "min_momentum": DE_DIGIT_TREND_MIN_MOMENTUM,
+            "fn": lambda: _de_digit_trend_matches(),
         },
     ]
 
@@ -407,7 +579,7 @@ def build_candidates(
     if target == "loto":
         filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday, as_of_str)
     else:
-        filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday)
+        filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday, target_str)
 
     candidates, filters_applied, value_filters = _build_from_filters(
         filter_defs,
@@ -439,6 +611,25 @@ def build_candidates(
         "yesterday_de": yesterday_de,
         "target_weekday": WEEKDAYS_VI[weekday],
     }
+    if target == "loto":
+        context["frequency_rank"] = get_loto_frequency_summary(limit=10)
+        trend = get_loto_frequency_trend(limit=10)
+        context["frequency_trend"] = {
+            "trending_up": trend["trending_up"],
+            "trending_down": trend["trending_down"],
+            "stable_hot": trend["stable_hot"],
+            "meta": trend["meta"],
+        }
+    else:
+        context["frequency_rank"] = get_de_frequency_summary(limit=10)
+        de_trend = get_de_frequency_trend(limit=10)
+        context["frequency_trend"] = {
+            "trending_up": de_trend["trending_up"],
+            "trending_down": de_trend["trending_down"],
+            "stable_hot": de_trend["stable_hot"],
+            "meta": de_trend["meta"],
+        }
+        context["digit_trend"] = get_de_digit_trend(limit=5)
 
     meta = {
         "total_candidates": len(candidates),
@@ -455,6 +646,14 @@ def build_candidates(
     else:
         meta["total_de_scanned"] = len(value_filters)
         meta["warning"] = DE_TARGET_WARNING
+        from app.services.intersection_service import build_intersection
+
+        ix = build_intersection(target_date=target_str)
+        meta["intersection"] = {
+            "intersection": ix["intersection"],
+            "final_picks": ix["final_picks"],
+            "strategy_used": ix["meta"]["strategy_used"],
+        }
     if min_filters_warning:
         meta["min_filters_warning"] = min_filters_warning
 

@@ -23,6 +23,14 @@ from app.services.stats_service import (
     get_gap_hot_cold,
     get_gap_max_cycle,
     get_gap_nhip,
+    get_loto_frequency_summary,
+    get_loto_frequency_rank,
+    get_loto_frequency_trend,
+    get_de_frequency_rank,
+    get_de_frequency_summary,
+    get_de_frequency_trend,
+    get_de_digit_trend,
+    DE_MAX_FREQ_WINDOW_DAYS,
     get_lo_roi,
     get_loto_theo_db,
     get_loto_theo_loto,
@@ -36,7 +44,7 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 class CandidatesBacktestRequest(BaseModel):
     days: int = Field(default=90, ge=1, le=365)
     top: Optional[int] = Field(default=None, ge=1, le=100)
-    min_filters: int = Field(default=1, ge=1, le=10)
+    min_filters: int = Field(default=1, ge=1, le=12)
     target: Literal["loto", "de"] = Field(default="loto")
 
 
@@ -48,7 +56,7 @@ class CandidatesPersistRequest(BaseModel):
     target_date: Optional[str] = None
     target: Literal["loto", "de", "both"] = Field(default="both")
     top: Optional[int] = Field(default=None, ge=1, le=100)
-    min_filters: int = Field(default=1, ge=1, le=10)
+    min_filters: int = Field(default=1, ge=1, le=12)
     sort: Literal["score", "filters", "loto"] = Field(default="score")
 
 
@@ -140,6 +148,96 @@ def lo_roi(
     limit: int = Query(default=20, ge=1, le=200),
 ):
     return get_lo_roi(loto=loto, de=de, window=window, limit=limit)
+
+
+@router.get("/frequency/loto-rank")
+def frequency_loto_rank(
+    window: int = Query(default=30, ge=1, le=500),
+    limit: int = Query(default=20, ge=1, le=100),
+    sort: Literal["hot", "cold"] = Query(default="hot"),
+):
+    return get_loto_frequency_rank(window=window, limit=limit, sort=sort)
+
+
+@router.get("/frequency/de-rank")
+def frequency_de_rank(
+    window: int = Query(default=730, ge=1, le=DE_MAX_FREQ_WINDOW_DAYS),
+    limit: int = Query(default=20, ge=1, le=100),
+    sort: Literal["hot", "cold"] = Query(default="hot"),
+):
+    try:
+        return get_de_frequency_rank(window=window, limit=limit, sort=sort)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+_DE_WINDOWS_DEFAULT = "365,730,1095,1825"
+
+
+@router.get("/frequency/loto-summary")
+def frequency_loto_summary(
+    windows: str = Query(default="30,50,100,200,300", description="Danh sách cửa sổ ngày"),
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    parsed = [int(w.strip()) for w in windows.split(",") if w.strip()]
+    return get_loto_frequency_summary(windows=parsed, limit=limit)
+
+
+@router.get("/frequency/loto-trend")
+def frequency_loto_trend(
+    windows: str = Query(default="30,50,100,200,300", description="Cửa sổ ngày để so sánh momentum"),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    parsed = sorted({int(w.strip()) for w in windows.split(",") if w.strip()})
+    if len(parsed) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 windows")
+    return get_loto_frequency_trend(windows=parsed, limit=limit)
+
+
+@router.get("/frequency/de-summary")
+def frequency_de_summary(
+    windows: str = Query(
+        default=_DE_WINDOWS_DEFAULT,
+        description=f"Cửa sổ ngày ≤ {DE_MAX_FREQ_WINDOW_DAYS} (5 năm): 1y,2y,3y,5y",
+    ),
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    parsed = [int(w.strip()) for w in windows.split(",") if w.strip()]
+    try:
+        return get_de_frequency_summary(windows=parsed, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/frequency/de-trend")
+def frequency_de_trend(
+    windows: str = Query(
+        default=_DE_WINDOWS_DEFAULT,
+        description=f"Momentum short−long, tối đa {DE_MAX_FREQ_WINDOW_DAYS} ngày",
+    ),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    parsed = sorted({int(w.strip()) for w in windows.split(",") if w.strip()})
+    if len(parsed) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 windows")
+    try:
+        return get_de_frequency_trend(windows=parsed, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/frequency/de-digit-trend")
+def frequency_de_digit_trend(
+    windows: str = Query(default=_DE_WINDOWS_DEFAULT, description="Đầu/tổng đề, ≤ 5 năm"),
+    limit: int = Query(default=5, ge=1, le=10),
+):
+    parsed = sorted({int(w.strip()) for w in windows.split(",") if w.strip()})
+    if len(parsed) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 windows")
+    try:
+        return get_de_digit_trend(windows=parsed, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/calendar/loto-theo-db")
@@ -273,7 +371,7 @@ def intersection_backtest(body: IntersectionBacktestRequest):
 def candidates(
     target_date: Optional[str] = Query(default=None),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=10),
+    min_filters: int = Query(default=1, ge=1, le=12),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
     target: Literal["loto", "de"] = Query(default="loto"),
     include_reasons: bool = Query(default=True),
@@ -298,7 +396,7 @@ def candidates_evaluate(
     target_date: str = Query(..., description="Ngày đã có KQXS"),
     target: Literal["loto", "de"] = Query(default="loto"),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=10),
+    min_filters: int = Query(default=1, ge=1, le=12),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
 ):
     try:
@@ -373,7 +471,7 @@ def candidates_snapshot(
     target_date: str = Query(...),
     target: Literal["loto", "de"] = Query(default="loto"),
     top: Optional[int] = Query(default=None, ge=1, le=100),
-    min_filters: int = Query(default=1, ge=1, le=10),
+    min_filters: int = Query(default=1, ge=1, le=12),
     sort: Literal["score", "filters", "loto"] = Query(default="score"),
 ):
     try:

@@ -41,7 +41,8 @@ scripts/
   tune_ensemble_weights.py
   migrate_mongo_to_pg.py  # One-time Mongo → PG
 docs/
-  SPEC-stats-engine-v4.3.md    # Spec hiện tại (gap-hot + frequency-hot)
+  SPEC-stats-engine-v4.4.md    # Spec hiện tại (frequency rank/trend, đề 5y windows)
+  SPEC-stats-engine-v4.3.md
   SPEC-stats-engine-v4.2.md
   SPEC-stats-engine-v4.1.md
   SPEC-stats-engine-v4.md
@@ -120,6 +121,13 @@ curl -X POST http://localhost:8081/analytics/refresh-views
 | GET | `/stats/calendar/loto-theo-loto` | Loto hay về sau loto X |
 | GET | `/stats/max-dan` | Dàn 3–5 số cùng về (`size`, `min_co_occur`) |
 | GET | `/stats/conditional-frequency` | ĐB hôm qua → tần suất ĐB hôm sau |
+| GET | `/stats/frequency/loto-rank` | Top loto hay về / ít về (window 30–300d) |
+| GET | `/stats/frequency/loto-trend` | Loto momentum 30d vs 300d |
+| GET | `/stats/frequency/loto-summary` | Hot/cold 30+50+100+200+300d |
+| GET | `/stats/frequency/de-rank` | Top đề hay về (default 730d, max 5 năm) |
+| GET | `/stats/frequency/de-summary` | Hot/cold đề 1y→5y |
+| GET | `/stats/frequency/de-trend` | Đề momentum 365d vs 1825d |
+| GET | `/stats/frequency/de-digit-trend` | Đầu/tổng đề đang heating |
 | GET | `/stats/rbk-cau` | Crawl cầu rongbachkim |
 | GET | `/stats/intersection` | **v4** CF ∩ RBK cầu lặp (`min_cf_lift`, `min_rbk_cau`) |
 | GET | `/stats/intersection/evaluate` | Đánh giá intersection vs KQXS 1 ngày (đề loto) |
@@ -145,7 +153,7 @@ curl -X POST http://localhost:8081/stats/candidates/backtest \
 curl "http://localhost:8081/stats/max-dan?size=3&min_co_occur=20"
 ```
 
-Chi tiết: [docs/SPEC-stats-engine-v4.2.md](docs/SPEC-stats-engine-v4.2.md).
+Chi tiết: [docs/SPEC-stats-engine-v4.4.md](docs/SPEC-stats-engine-v4.4.md).
 
 ### Predictions (legacy — không mount)
 
