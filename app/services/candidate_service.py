@@ -1,4 +1,5 @@
 import logging
+import math
 import random
 import time
 from collections import defaultdict
@@ -7,7 +8,8 @@ from typing import Callable, Literal, Optional
 
 from app.db import fetch_all
 from app.prediction.constants import DEFAULT_TOP, TARGET_DE, TARGET_LOTO
-from app.prediction.features import actual_values_for_date, latest_draw_date, previous_draw_date
+from app.prediction.features import FeatureContext, actual_values_for_date, latest_draw_date, previous_draw_date
+from app.prediction.models import bayesian_update, chi_square
 from app.repositories.candidate_repo import candidate_repo
 from app.services.stats_service import (
     CANDIDATES_DISCLAIMER,
@@ -53,6 +55,8 @@ DE_FILTER_PRIORITY = {
     "de-frequency-trend": 4,
     "de-digit-trend": 3,
     "de-loto-boost": 3,
+    "de-chi-square": 3,
+    "de-bayesian-update": 3,
     "de-frequency-rank": 2,
     "de-lag1": 2,
     "de-calendar": 1,
@@ -68,6 +72,9 @@ FREQ_TREND_MIN_MOMENTUM = 3.0
 DE_FREQ_RANK_TOP_N = 15
 DE_FREQ_TREND_MIN_MOMENTUM = 0.8
 DE_DIGIT_TREND_MIN_MOMENTUM = 2.0
+PREDICTION_MODEL_TOP_N = 25
+CHI_SQUARE_MIN_SCORE = 0.55
+BAYESIAN_UPDATE_MIN_SCORE = 0.52
 
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
@@ -111,6 +118,12 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return min((lift - 1) * 2, 0.5)
     if filter_key == "rbk-cau":
         return min(float(detail.get("weight", 0)) * 0.5, 0.5)
+    if filter_key in ("chi-square", "de-chi-square"):
+        z = float(detail.get("z", 0))
+        return min(max(z, 0) / 5.0, 0.5)
+    if filter_key in ("bayesian-update", "de-bayesian-update"):
+        lift = float(detail.get("lift", 1))
+        return min((lift - 1) * 2, 0.5)
     return 0.0
 
 
@@ -405,6 +418,76 @@ def _rbk_cau_filter_matches(as_of_date: str) -> list[FilterMatch]:
     )
 
 
+def _feature_ctx(as_of_date: str, target_date: str, target_type: str) -> FeatureContext:
+    return FeatureContext.load(
+        date.fromisoformat(as_of_date),
+        target_type,
+        date.fromisoformat(target_date),
+        use_cache=True,
+    )
+
+
+def _chi_square_matches(
+    as_of_date: str,
+    target_date: str,
+    target_type: str,
+    top_n: int = PREDICTION_MODEL_TOP_N,
+    min_score: float = CHI_SQUARE_MIN_SCORE,
+) -> list[FilterMatch]:
+    ctx = _feature_ctx(as_of_date, target_date, target_type)
+    scores = chi_square.score_chi_square(ctx)
+    hits = ctx.hit_counts()
+    total = sum(hits.values())
+    n = len(ctx.universe)
+    expected = total / n if n else 0.0
+
+    matches: list[FilterMatch] = []
+    for lot, score in sorted(scores.items(), key=lambda x: (-x[1], x[0]))[:top_n]:
+        if score < min_score:
+            continue
+        obs = hits.get(lot, 0)
+        z = (obs - expected) / math.sqrt(expected) if expected > 0 else 0.0
+        lift = obs / expected if expected > 0 else 1.0
+        label = "đề" if target_type == TARGET_DE else "loto"
+        reason = (
+            f"chi-square: {label} {lot} z={z:.2f} "
+            f"(obs={obs}, expected={expected:.1f}, lift {lift:.2f}x, score {score:.2f})"
+        )
+        matches.append((lot, reason, {"lift": round(lift, 3), "z": round(z, 2), "score": score}))
+    return matches
+
+
+def _bayesian_update_matches(
+    as_of_date: str,
+    target_date: str,
+    target_type: str,
+    top_n: int = PREDICTION_MODEL_TOP_N,
+    min_score: float = BAYESIAN_UPDATE_MIN_SCORE,
+) -> list[FilterMatch]:
+    ctx = _feature_ctx(as_of_date, target_date, target_type)
+    scores = bayesian_update.score_bayesian_update(ctx)
+    hits = ctx.hit_counts()
+    total_opp = ctx.total_opportunities
+    if total_opp:
+        prior = {v: hits.get(v, 0) / total_opp for v in ctx.universe}
+    else:
+        prior = {v: 1.0 / len(ctx.universe) for v in ctx.universe}
+
+    matches: list[FilterMatch] = []
+    for lot, score in sorted(scores.items(), key=lambda x: (-x[1], x[0]))[:top_n]:
+        if score < min_score:
+            continue
+        p = prior.get(lot, 1e-6)
+        lift = max(score / 0.5, 1.0) if p > 0 else 1.0
+        label = "đề" if target_type == TARGET_DE else "loto"
+        reason = (
+            f"bayesian-update: {label} {lot} posterior score {score:.2f} "
+            f"(windows 7/14/30/60d, prior {p:.3f}, lift {lift:.2f}x)"
+        )
+        matches.append((lot, reason, {"lift": round(lift, 3), "score": score, "prior": round(p, 4)}))
+    return matches
+
+
 def _de_tiebreak(candidate: dict) -> int:
     return sum(DE_FILTER_PRIORITY.get(k, 0) for k in candidate.get("score_breakdown", {}))
 
@@ -488,6 +571,7 @@ def _loto_filter_defs(
     yesterday_de: str,
     weekday: int,
     as_of_date: str,
+    target_date: str,
 ) -> list[dict]:
     return [
         {"key": "lag-1", "min_lift": 1.10, "fn": lambda: _lag1_matches(yesterday_lotos)},
@@ -505,6 +589,16 @@ def _loto_filter_defs(
             "fn": lambda: _conditional_frequency_filter_matches(yesterday_de, weekday),
         },
         {"key": "rbk-cau", "limit": 5, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
+        {
+            "key": "chi-square",
+            "top_n": PREDICTION_MODEL_TOP_N,
+            "fn": lambda: _chi_square_matches(as_of_date, target_date, TARGET_LOTO),
+        },
+        {
+            "key": "bayesian-update",
+            "top_n": PREDICTION_MODEL_TOP_N,
+            "fn": lambda: _bayesian_update_matches(as_of_date, target_date, TARGET_LOTO),
+        },
     ]
 
 
@@ -513,6 +607,7 @@ def _de_filter_defs(
     yesterday_de: str,
     weekday: int,
     target_date: str,
+    as_of_date: str,
 ) -> list[dict]:
     return [
         {
@@ -546,6 +641,16 @@ def _de_filter_defs(
             "min_momentum": DE_DIGIT_TREND_MIN_MOMENTUM,
             "fn": lambda: _de_digit_trend_matches(),
         },
+        {
+            "key": "de-chi-square",
+            "top_n": PREDICTION_MODEL_TOP_N,
+            "fn": lambda: _chi_square_matches(as_of_date, target_date, TARGET_DE),
+        },
+        {
+            "key": "de-bayesian-update",
+            "top_n": PREDICTION_MODEL_TOP_N,
+            "fn": lambda: _bayesian_update_matches(as_of_date, target_date, TARGET_DE),
+        },
     ]
 
 
@@ -577,9 +682,9 @@ def build_candidates(
     weekday = target_dt.weekday()
 
     if target == "loto":
-        filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday, as_of_str)
+        filter_defs = _loto_filter_defs(yesterday_lotos, yesterday_de, weekday, as_of_str, target_str)
     else:
-        filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday, target_str)
+        filter_defs = _de_filter_defs(yesterday_lotos, yesterday_de, weekday, target_str, as_of_str)
 
     candidates, filters_applied, value_filters = _build_from_filters(
         filter_defs,

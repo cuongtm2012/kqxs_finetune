@@ -6,6 +6,8 @@ from app.prediction.constants import (
     DEFAULT_ENSEMBLE_WEIGHTS,
     LOTO_DE_MODELS,
     MODEL_BAYESIAN,
+    MODEL_BAYESIAN_UPDATE,
+    MODEL_CHI_SQUARE,
     MODEL_DIGIT,
     MODEL_ENSEMBLE,
     MODEL_EWMA,
@@ -23,6 +25,8 @@ from app.prediction.features import FeatureContext
 from app.prediction.models.base import normalize_minmax, rank_scores
 from app.prediction.models import (
     bayesian_beta,
+    bayesian_update,
+    chi_square,
     digit_dau_dit,
     ewma,
     frequency,
@@ -39,6 +43,8 @@ MODEL_FNS = {
     MODEL_BAYESIAN: lambda ctx: bayesian_beta.score_bayesian(ctx),
     MODEL_WEEKDAY: lambda ctx: weekday_station.score_weekday(ctx),
     MODEL_DIGIT: lambda ctx: digit_dau_dit.score_digit(ctx),
+    MODEL_CHI_SQUARE: lambda ctx: chi_square.score_chi_square(ctx),
+    MODEL_BAYESIAN_UPDATE: lambda ctx: bayesian_update.score_bayesian_update(ctx),
 }
 
 

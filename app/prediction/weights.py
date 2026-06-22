@@ -10,6 +10,8 @@ from typing import Dict
 from app.prediction.constants import (
     DEFAULT_ENSEMBLE_WEIGHTS,
     MODEL_BAYESIAN,
+    MODEL_BAYESIAN_UPDATE,
+    MODEL_CHI_SQUARE,
     MODEL_DIGIT,
     MODEL_EWMA,
     MODEL_FREQUENCY,
@@ -84,10 +86,22 @@ def _load_json_weights() -> Dict[str, Dict[str, float]]:
 
 
 def ensemble_weights_for(target_type: str) -> Dict[str, float]:
-    """Prefer tuned_weights.json; fallback to baked-in constants."""
+    """Prefer tuned_weights.json; merge missing models from defaults."""
     json_weights = _load_json_weights()
     if target_type in json_weights:
-        return json_weights[target_type]
+        weights = dict(json_weights[target_type])
+        defaults = DEFAULT_ENSEMBLE_WEIGHTS
+        missing = [m for m in defaults if m not in weights]
+        if missing:
+            spare = sum(weights.values())
+            scale = max(0.0, 1.0 - spare)
+            add_total = sum(defaults[m] for m in missing) or 1.0
+            for m in missing:
+                weights[m] = round(defaults[m] / add_total * scale, 4)
+            # renormalize
+            total = sum(weights.values()) or 1.0
+            weights = {k: round(v / total, 4) for k, v in weights.items()}
+        return weights
     return ENSEMBLE_WEIGHTS_BY_TARGET.get(target_type, DEFAULT_ENSEMBLE_WEIGHTS)
 
 
