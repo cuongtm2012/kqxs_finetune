@@ -63,6 +63,48 @@ def score_model(ctx: FeatureContext, model_name: str) -> Dict[str, float]:
     return fn(ctx)
 
 
+def _cycle_boost(ctx: FeatureContext, scores: Dict[str, float]) -> Dict[str, float]:
+    """Boost scores based on lottery cycle patterns.
+    
+    After backtest 22/06/2026, discovered:
+      - Cham trùng với đề hôm trước (de 83→36: cham 3 xuyên 2 kỳ) → boost 5%
+      - Số có tổng chữ số = bóng dương của đề hôm trước → boost 10%
+      - Bóng dương: 0→5, 1→6, 2→7, 3→8, 4→9, 5→0, 6→1, 7→2, 8→3, 9→4
+    """
+    last_day = ctx.last_day
+    if last_day is None or ctx.target_type not in ("loto", "de"):
+        return scores
+    
+    prev_de = last_day.de  # đề kỳ trước (2 chữ số)
+    if not prev_de or len(prev_de) != 2:
+        return scores
+    
+    prev_last_digit = prev_de[-1]  # đuôi đề kỳ trước (cham trùng)
+    BONG_DUONG = {"0": "5", "1": "6", "2": "7", "3": "8", "4": "9",
+                  "5": "0", "6": "1", "7": "2", "8": "3", "9": "4"}
+    
+    prev_sum = str((int(prev_de[0]) + int(prev_de[1])) % 10)
+    bong_sum = BONG_DUONG.get(prev_sum, prev_sum)
+    prev_reverse = prev_de[1] + prev_de[0]  # số đảo XY → YX
+    
+    boosted = dict(scores)
+    for val in boosted:
+        if len(val) != 2:
+            continue
+        # Boost 5% nếu số có cham trùng đuôi đề hôm trước (52.5% pattern)
+        if val[-1] == prev_last_digit or val[0] == prev_last_digit:
+            boosted[val] *= 1.05
+        # Boost 10% nếu tổng 2 số = bóng dương tổng đề hôm trước
+        val_sum = str((int(val[0]) + int(val[1])) % 10)
+        if val_sum == bong_sum:
+            boosted[val] *= 1.10
+        # Boost 5% cho số đảo của đề hôm trước (27.1% pattern, loto only)
+        if ctx.target_type == "loto" and val == prev_reverse:
+            boosted[val] *= 1.05
+    
+    return boosted
+
+
 def score_ensemble(
     ctx: FeatureContext,
     weights: Optional[Dict[str, float]] = None,
@@ -85,6 +127,9 @@ def score_ensemble(
 
     if total_w > 0:
         combined = {k: v / total_w for k, v in combined.items()}
+    
+    # Post-processing: cycle boost
+    combined = _cycle_boost(ctx, combined)
     return combined, active
 
 

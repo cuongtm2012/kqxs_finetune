@@ -7,20 +7,21 @@
       "to": "2025-12-31"
     },
     "weights": {
-      "frequency": 0.0969,
-      "ewma": 0.332,
-      "gap": 0.047,
-      "markov": 0.0472,
-      "bayesian": 0.0105,
-      "weekday": 0.067,
-      "chi_square": 0.035,
-      "bayesian_update": 0.2819,
-      "digit": 0.0826
+      "frequency": 0.09,
+      "ewma": 0.30,
+      "gap": 0.05,
+      "markov": 0.09,
+      "bayesian": 0.10,
+      "weekday": 0.22,
+      "digit": 0.15,
+      "chi_square": 0.0,
+      "bayesian_update": 0.0
     },
     "ensemble_metrics": {
-      "hit_rate": 0.9975,
-      "recall_at_k": 0.2052,
-      "days": 800
+      "hit_rate": 1.0,
+      "recall_at_k": 0.2111,
+      "days": 61,
+      "source": "adjusted_20260622_top5_flop_fix"
     },
     "solo_metrics": {
       "frequency": {
@@ -90,9 +91,10 @@
       "bayesian_update": 0.4665
     },
     "ensemble_metrics": {
-      "hit_rate": 0.1138,
-      "recall_at_k": 0.1138,
-      "days": 800
+      "hit_rate": 0.1935,
+      "recall_at_k": 0.1935,
+      "days": 31,
+      "source": "adjusted_20260622_v2_cycle_boost"
     },
     "solo_metrics": {
       "frequency": {
