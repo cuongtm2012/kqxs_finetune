@@ -7,21 +7,22 @@
       "to": "2025-12-31"
     },
     "weights": {
-      "frequency": 0.09,
-      "ewma": 0.30,
-      "gap": 0.05,
-      "markov": 0.09,
-      "bayesian": 0.10,
-      "weekday": 0.22,
-      "digit": 0.15,
+      "frequency": 0.0828,
+      "ewma": 0.276,
+      "gap": 0.046,
+      "markov": 0.0828,
+      "bayesian": 0.092,
+      "weekday": 0.2024,
+      "digit": 0.138,
       "chi_square": 0.0,
-      "bayesian_update": 0.0
+      "bayesian_update": 0.0,
+      "cycle_pair": 0.08
     },
     "ensemble_metrics": {
       "hit_rate": 1.0,
       "recall_at_k": 0.2111,
       "days": 61,
-      "source": "adjusted_20260622_top5_flop_fix"
+      "source": "adjusted_20260624_add_cycle_pair_normalized"
     },
     "solo_metrics": {
       "frequency": {
@@ -81,20 +82,21 @@
       "to": "2025-12-31"
     },
     "weights": {
-      "frequency": 0.0051,
-      "ewma": 0.063,
-      "gap": 0.3123,
-      "markov": 0.0065,
-      "bayesian": 0.018,
-      "weekday": 0.1035,
-      "chi_square": 0.0252,
-      "bayesian_update": 0.4665
+      "frequency": 0.0045,
+      "ewma": 0.0564,
+      "gap": 0.2794,
+      "markov": 0.0058,
+      "bayesian": 0.0161,
+      "weekday": 0.0926,
+      "chi_square": 0.0225,
+      "bayesian_update": 0.4173,
+      "cycle_pair": 0.1053
     },
     "ensemble_metrics": {
       "hit_rate": 0.1935,
       "recall_at_k": 0.1935,
       "days": 31,
-      "source": "adjusted_20260622_v2_cycle_boost"
+      "source": "adjusted_20260624_add_cycle_pair_normalized"
     },
     "solo_metrics": {
       "frequency": {

@@ -12,6 +12,7 @@ from app.prediction.constants import (
     MODEL_BAYESIAN,
     MODEL_BAYESIAN_UPDATE,
     MODEL_CHI_SQUARE,
+    MODEL_CYCLE_PAIR,
     MODEL_DIGIT,
     MODEL_EWMA,
     MODEL_FREQUENCY,
@@ -28,24 +29,34 @@ _WEIGHTS_PATH = Path(__file__).resolve().parent / "tuned_weights.json"
 
 # Adjusted after backtest 22/06/2026 — EWMA was overweighted (0.447),
 # causing top-5 flop (0/5). Boosted WEEKDAY (day-of-week stats more stable).
+# Added CYCLE_PAIR (0.16) — 50 fixed pair cycle analysis on 23/06/2026.
 # See tuned_weights.json for walk-forward tuned version.
+# Adjusted after backtest 24/06/2026 — bayesian_update short window hit 59 (hạng 1).
+# Tăng bayesian_update lên 0.10, giảm chi_square xuống 0.01 (noisy signal).
+# Thêm neighbor boost trong cycle_boost cho số lân cận đề.
 ENSEMBLE_WEIGHTS_LOTO = {
-    MODEL_FREQUENCY: 0.09,
-    MODEL_EWMA: 0.30,
-    MODEL_GAP: 0.05,
-    MODEL_MARKOV: 0.09,
-    MODEL_BAYESIAN: 0.10,
-    MODEL_WEEKDAY: 0.22,
-    MODEL_DIGIT: 0.15,
+    MODEL_FREQUENCY: 0.07,
+    MODEL_EWMA: 0.22,
+    MODEL_GAP: 0.04,
+    MODEL_MARKOV: 0.06,
+    MODEL_BAYESIAN: 0.07,
+    MODEL_WEEKDAY: 0.17,
+    MODEL_DIGIT: 0.10,
+    MODEL_CYCLE_PAIR: 0.16,
+    MODEL_CHI_SQUARE: 0.01,
+    MODEL_BAYESIAN_UPDATE: 0.10,
 }
 
 ENSEMBLE_WEIGHTS_DE = {
-    MODEL_FREQUENCY: 0.1066,
-    MODEL_EWMA: 0.2415,
-    MODEL_GAP: 0.0406,
-    MODEL_MARKOV: 0.307,
-    MODEL_BAYESIAN: 0.1712,
-    MODEL_WEEKDAY: 0.1333,
+    MODEL_FREQUENCY: 0.0045,
+    MODEL_EWMA: 0.0564,
+    MODEL_GAP: 0.2794,
+    MODEL_MARKOV: 0.0058,
+    MODEL_BAYESIAN: 0.0161,
+    MODEL_WEEKDAY: 0.0926,
+    MODEL_CHI_SQUARE: 0.0225,
+    MODEL_BAYESIAN_UPDATE: 0.4173,
+    MODEL_CYCLE_PAIR: 0.1053,
 }
 
 ENSEMBLE_WEIGHTS_DAU = {

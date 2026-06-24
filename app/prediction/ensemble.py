@@ -8,6 +8,7 @@ from app.prediction.constants import (
     MODEL_BAYESIAN,
     MODEL_BAYESIAN_UPDATE,
     MODEL_CHI_SQUARE,
+    MODEL_CYCLE_PAIR,
     MODEL_DIGIT,
     MODEL_ENSEMBLE,
     MODEL_EWMA,
@@ -27,6 +28,7 @@ from app.prediction.models import (
     bayesian_beta,
     bayesian_update,
     chi_square,
+    cycle_pair,
     digit_dau_dit,
     ewma,
     frequency,
@@ -45,6 +47,7 @@ MODEL_FNS = {
     MODEL_DIGIT: lambda ctx: digit_dau_dit.score_digit(ctx),
     MODEL_CHI_SQUARE: lambda ctx: chi_square.score_chi_square(ctx),
     MODEL_BAYESIAN_UPDATE: lambda ctx: bayesian_update.score_bayesian_update(ctx),
+    MODEL_CYCLE_PAIR: lambda ctx: cycle_pair.score_cycle_pair(ctx),
 }
 
 
@@ -88,6 +91,18 @@ def _cycle_boost(ctx: FeatureContext, scores: Dict[str, float]) -> Dict[str, flo
     prev_reverse = prev_de[1] + prev_de[0]  # số đảo XY → YX
     
     boosted = dict(scores)
+    
+    # Boost cho số lân cận ±1 của đề hôm trước (backtest 24/06: đề 36→51, lệch 15)
+    # Số có dạng XY với X=prev_de[0]±1 hoặc Y=prev_de[1]±1
+    neighbor_pairs = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            nx = str((int(prev_de[0]) + dx) % 10)
+            ny = str((int(prev_de[1]) + dy) % 10)
+            neighbor_pairs.append(nx + ny)
+    
     for val in boosted:
         if len(val) != 2:
             continue
@@ -101,6 +116,9 @@ def _cycle_boost(ctx: FeatureContext, scores: Dict[str, float]) -> Dict[str, flo
         # Boost 5% cho số đảo của đề hôm trước (27.1% pattern, loto only)
         if ctx.target_type == "loto" and val == prev_reverse:
             boosted[val] *= 1.05
+        # Boost 8% cho số lân cận ±1 của đề (new: backtest 24/06 phát hiện pattern)
+        if ctx.target_type in ("loto", "de") and val in neighbor_pairs:
+            boosted[val] *= 1.08
     
     return boosted
 
@@ -130,6 +148,21 @@ def score_ensemble(
     
     # Post-processing: cycle boost
     combined = _cycle_boost(ctx, combined)
+    
+    # Chi-square penalty cho số có posterior quá cao nhưng z-score thấp
+    # (backtest 24/06: số 52 posterior 1.00 nhưng miss — overfit signal)
+    chi_raw = chi_square.score_chi_square(ctx)
+    for val in combined:
+        if len(val) != 2:
+            continue
+        chi_score = chi_raw.get(val, 0.5)
+        # Nếu chi-square score thấp (<0.4) mà ensemble score cao, penalize 15%
+        if chi_score < 0.4 and combined[val] > 0.7:
+            combined[val] *= 0.85
+        # Nếu chi-square score rất thấp (<0.3), penalize thêm 10%
+        if chi_score < 0.3 and combined[val] > 0.5:
+            combined[val] *= 0.90
+    
     return combined, active
 
 
