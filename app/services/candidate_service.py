@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Callable, Literal, Optional
 
+from app.data.max_cycle_history import load_max_cycle_history
 from app.db import fetch_all
 from app.prediction.constants import DEFAULT_TOP, TARGET_DE, TARGET_LOTO
 from app.prediction.features import FeatureContext, actual_values_for_date, latest_draw_date, previous_draw_date
@@ -62,19 +63,21 @@ DE_FILTER_PRIORITY = {
     "de-calendar": 1,
 }
 
-LO_ROI_SCORE_CAP = 1.0
+LO_ROI_SCORE_CAP = 0.5
 DE_MAX_MIN_FILTERS = 2
-MAX_CYCLE_MIN_PCT = 55
+MAX_CYCLE_MIN_PCT = 40
 GAP_HOT_MIN_GAP = 8
+CYCLE_HISTORY_MIN_RATIO = 0.50
+CYCLE_HISTORY_MIN_GAP = 10
 FREQUENCY_HOT_MIN_LIFT = 1.05
 FREQ_RANK_TOP_N = 25
 FREQ_TREND_MIN_MOMENTUM = 3.0
 DE_FREQ_RANK_TOP_N = 15
 DE_FREQ_TREND_MIN_MOMENTUM = 0.8
 DE_DIGIT_TREND_MIN_MOMENTUM = 2.0
-PREDICTION_MODEL_TOP_N = 25
-CHI_SQUARE_MIN_SCORE = 0.55
-BAYESIAN_UPDATE_MIN_SCORE = 0.52
+PREDICTION_MODEL_TOP_N = 40
+CHI_SQUARE_MIN_SCORE = 0.60
+BAYESIAN_UPDATE_MIN_SCORE = 0.50
 
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
@@ -85,6 +88,9 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
         return detail.get("pct_of_max", 0) / 100.0
     if filter_key == "gap-hot":
         return min(detail.get("current_gap", 0) / 25.0, 0.5)
+    if filter_key == "cycle-history":
+        gap_ratio = float(detail.get("gap_ratio", 0.5))
+        return min(gap_ratio * 0.5, 0.5)
     if filter_key == "frequency-hot":
         return min((float(detail.get("lift", 1)) - 1) * 2, 0.4)
     if filter_key == "frequency-rank":
@@ -124,6 +130,15 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
     if filter_key in ("bayesian-update", "de-bayesian-update"):
         lift = float(detail.get("lift", 1))
         return min((lift - 1) * 2, 0.5)
+    if filter_key == "cycle-boost":
+        btype = detail.get("type", "")
+        if btype == "dao":
+            return 0.15  # số đảo: boost nhẹ
+        if btype == "cham":
+            return 0.08  # cham trùng: boost nhẹ
+        if btype == "bong":
+            return 0.10  # bóng dương: boost vừa
+        return 0.05
     return 0.0
 
 
@@ -222,6 +237,49 @@ def _gap_hot_matches(min_gap: int = GAP_HOT_MIN_GAP) -> list[FilterMatch]:
     return matches
 
 
+def _cycle_history_matches(
+    as_of_date: str,
+    min_ratio: float = CYCLE_HISTORY_MIN_RATIO,
+    min_gap: int = CYCLE_HISTORY_MIN_GAP,
+) -> list[FilterMatch]:
+    """Match lotos at >= min_ratio of mketqua historical max cycle."""
+    _ = as_of_date  # gap summaries use latest draw in DB
+    history = load_max_cycle_history()
+    if not history:
+        return []
+
+    matches: list[FilterMatch] = []
+    for lot, summary in gap_hot_matches(min_gap=min_gap).items():
+        entry = history.get(lot)
+        if not entry:
+            continue
+        max_gap = int(entry.get("max_gap_days", 0))
+        if max_gap <= 0:
+            continue
+        current_gap = int(summary.get("current_gap", 0))
+        if current_gap <= 0:
+            continue
+        gap_ratio = current_gap / max_gap
+        if gap_ratio < min_ratio:
+            continue
+        gap_ratio_clamped = min(max(gap_ratio, 0.5), 1.0)
+        lift = round(1.0 + gap_ratio_clamped * 0.5, 3)
+        reason = (
+            f"cycle-history: loto {lot} gap {current_gap}/{max_gap} ngày "
+            f"(ratio {gap_ratio:.0%}, lift {lift}x, mketqua max)"
+        )
+        detail = {
+            "gap_ratio": round(gap_ratio_clamped, 3),
+            "current_gap": current_gap,
+            "max_gap": max_gap,
+            "max_gap_start": entry.get("max_gap_start"),
+            "max_gap_end": entry.get("max_gap_end"),
+            "lift": lift,
+        }
+        matches.append((lot, reason, detail))
+    return matches
+
+
 def _frequency_hot_matches(min_lift: float = FREQUENCY_HOT_MIN_LIFT) -> list[FilterMatch]:
     matches: list[FilterMatch] = []
     for lot, info in frequency_hot_matches(min_lift=min_lift).items():
@@ -315,7 +373,9 @@ def _lo_roi_matches(yesterday_de: str, window: int = 3) -> list[FilterMatch]:
     result = get_lo_roi(de=yesterday_de, window=window, limit=200)
     matches: list[FilterMatch] = []
     for row in result["data"]:
-        if row["lift"] <= 1.0:
+        if row["lift"] <= 1.05:
+            continue
+        if row["prob"] < 0.15:
             continue
         reason = (
             f"lô rơi: sau đề {yesterday_de} loto {row['loto']} rơi {row['prob']:.1%} "
@@ -425,6 +485,51 @@ def _feature_ctx(as_of_date: str, target_date: str, target_type: str) -> Feature
         date.fromisoformat(target_date),
         use_cache=True,
     )
+
+
+# Bóng dương mapping: 0→5, 1→6, 2→7, 3→8, 4→9, 5→0, 6→1, 7→2, 8→3, 9→4
+BONG_DUONG = {"0": "5", "1": "6", "2": "7", "3": "8", "4": "9", "5": "0", "6": "1", "7": "2", "8": "3", "9": "4"}
+
+
+def _cycle_boost_matches(yesterday_de: str) -> list[FilterMatch]:
+    """Boost numbers with cham trùng (đuôi đề hôm qua) + số đảo + bóng dương."""
+    if not yesterday_de:
+        return []
+    matches: list[FilterMatch] = []
+    seen = set()
+
+    # 1. Cham trùng: số có đầu hoặc đuôi trùng với đuôi đề hôm qua
+    last_digit = yesterday_de[-1]
+    for tens in range(10):
+        for units in range(10):
+            val = f"{tens}{units}"
+
+    # 2. Số đảo: YX từ XY (đề hôm qua)
+    rev_de = yesterday_de[1] + yesterday_de[0]
+    if rev_de not in seen:
+        seen.add(rev_de)
+        matches.append((rev_de, f"cycle-boost: số đảo {yesterday_de}→{rev_de}", {"lift": 1.27, "type": "dao"}))
+
+    # 3. Cham trùng: số có đầu hoặc đuôi = đuôi đề
+    for val in [f"{d}{u}" for d in range(10) for u in range(10)]:
+        if val in seen:
+            continue
+        if val[0] == last_digit or val[1] == last_digit:
+            seen.add(val)
+            matches.append((val, f"cycle-boost: cham {last_digit} (đuôi đề {yesterday_de})", {"lift": 1.05, "type": "cham"}))
+
+    # 4. Bóng dương: số có tổng = bóng dương của tổng đề
+    de_sum = str((int(yesterday_de[0]) + int(yesterday_de[1])) % 10)
+    bong_sum = BONG_DUONG.get(de_sum)
+    if bong_sum:
+        for val in [f"{d}{u}" for d in range(10) for u in range(10)]:
+            if val in seen:
+                continue
+            if str((int(val[0]) + int(val[1])) % 10) == bong_sum:
+                seen.add(val)
+                matches.append((val, f"cycle-boost: bóng dương tổng {de_sum}→{bong_sum}", {"lift": 1.10, "type": "bong"}))
+
+    return matches
 
 
 def _chi_square_matches(
@@ -578,11 +683,16 @@ def _loto_filter_defs(
         {"key": "same-day", "min_lift": 1.10, "fn": lambda: _same_day_matches(yesterday_lotos)},
         {"key": "max-cycle", "min_pct": MAX_CYCLE_MIN_PCT, "fn": lambda: _max_cycle_matches()},
         {"key": "gap-hot", "min_gap": GAP_HOT_MIN_GAP, "fn": lambda: _gap_hot_matches()},
+        {
+            "key": "cycle-history",
+            "min_ratio": CYCLE_HISTORY_MIN_RATIO,
+            "fn": lambda: _cycle_history_matches(as_of_date),
+        },
         {"key": "frequency-hot", "min_lift": FREQUENCY_HOT_MIN_LIFT, "fn": lambda: _frequency_hot_matches()},
         {"key": "frequency-rank", "top_n": FREQ_RANK_TOP_N, "fn": lambda: _frequency_rank_matches()},
         {"key": "frequency-trend", "min_momentum": FREQ_TREND_MIN_MOMENTUM, "fn": lambda: _frequency_trend_matches()},
         {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
-        {"key": "lo-roi", "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
+        {"key": "lo-roi", "min_lift": 1.05, "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
         {
             "key": "conditional-frequency",
             "min_lift": 1.05,
@@ -598,6 +708,11 @@ def _loto_filter_defs(
             "key": "bayesian-update",
             "top_n": PREDICTION_MODEL_TOP_N,
             "fn": lambda: _bayesian_update_matches(as_of_date, target_date, TARGET_LOTO),
+        },
+        # Cycle boost: cham trùng + số đảo từ đề hôm qua
+        {
+            "key": "cycle-boost",
+            "fn": lambda: _cycle_boost_matches(yesterday_de),
         },
     ]
 

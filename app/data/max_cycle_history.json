@@ -1,0 +1,606 @@
+{
+  "source_url": "https://mketqua.net/loto-gan",
+  "crawled_at": "2026-06-25T13:45:35Z",
+  "numbers": {
+    "00": {
+      "max_gap_days": 28,
+      "max_gap_start": "2018-07-10",
+      "max_gap_end": "2018-08-08",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "01": {
+      "max_gap_days": 24,
+      "max_gap_start": "2018-03-05",
+      "max_gap_end": "2018-03-30",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "02": {
+      "max_gap_days": 22,
+      "max_gap_start": "2017-07-03",
+      "max_gap_end": "2017-07-26",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "03": {
+      "max_gap_days": 31,
+      "max_gap_start": "2022-04-04",
+      "max_gap_end": "2022-05-06",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "04": {
+      "max_gap_days": 34,
+      "max_gap_start": "2016-11-23",
+      "max_gap_end": "2016-12-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "05": {
+      "max_gap_days": 23,
+      "max_gap_start": "2018-07-30",
+      "max_gap_end": "2018-08-23",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "06": {
+      "max_gap_days": 27,
+      "max_gap_start": "2022-10-04",
+      "max_gap_end": "2022-11-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "07": {
+      "max_gap_days": 28,
+      "max_gap_start": "2025-10-22",
+      "max_gap_end": "2025-11-20",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "08": {
+      "max_gap_days": 23,
+      "max_gap_start": "2022-07-08",
+      "max_gap_end": "2022-08-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "09": {
+      "max_gap_days": 24,
+      "max_gap_start": "2019-04-23",
+      "max_gap_end": "2019-05-18",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "10": {
+      "max_gap_days": 33,
+      "max_gap_start": "2016-12-07",
+      "max_gap_end": "2017-01-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "11": {
+      "max_gap_days": 27,
+      "max_gap_start": "2018-06-28",
+      "max_gap_end": "2018-07-26",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "12": {
+      "max_gap_days": 23,
+      "max_gap_start": "2018-06-07",
+      "max_gap_end": "2018-07-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "13": {
+      "max_gap_days": 23,
+      "max_gap_start": "2018-01-13",
+      "max_gap_end": "2018-02-06",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "14": {
+      "max_gap_days": 33,
+      "max_gap_start": "2020-01-13",
+      "max_gap_end": "2020-02-20",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "15": {
+      "max_gap_days": 27,
+      "max_gap_start": "2019-08-13",
+      "max_gap_end": "2019-09-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "16": {
+      "max_gap_days": 27,
+      "max_gap_start": "2022-03-13",
+      "max_gap_end": "2022-04-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "17": {
+      "max_gap_days": 29,
+      "max_gap_start": "2017-08-20",
+      "max_gap_end": "2017-09-19",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "18": {
+      "max_gap_days": 30,
+      "max_gap_start": "2015-09-16",
+      "max_gap_end": "2015-10-17",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "19": {
+      "max_gap_days": 20,
+      "max_gap_start": "2017-08-11",
+      "max_gap_end": "2017-09-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "20": {
+      "max_gap_days": 24,
+      "max_gap_start": "2020-07-14",
+      "max_gap_end": "2020-08-08",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "21": {
+      "max_gap_days": 28,
+      "max_gap_start": "2016-05-10",
+      "max_gap_end": "2016-06-08",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "22": {
+      "max_gap_days": 24,
+      "max_gap_start": "2016-10-06",
+      "max_gap_end": "2016-10-31",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "23": {
+      "max_gap_days": 25,
+      "max_gap_start": "2020-10-20",
+      "max_gap_end": "2020-11-15",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "24": {
+      "max_gap_days": 25,
+      "max_gap_start": "2015-05-01",
+      "max_gap_end": "2015-05-27",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "25": {
+      "max_gap_days": 24,
+      "max_gap_start": "2025-04-18",
+      "max_gap_end": "2025-05-13",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "26": {
+      "max_gap_days": 36,
+      "max_gap_start": "2026-04-15",
+      "max_gap_end": "2026-05-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "27": {
+      "max_gap_days": 27,
+      "max_gap_start": "2022-02-21",
+      "max_gap_end": "2022-03-21",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "28": {
+      "max_gap_days": 30,
+      "max_gap_start": "2015-07-15",
+      "max_gap_end": "2015-08-15",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "29": {
+      "max_gap_days": 25,
+      "max_gap_start": "2017-03-14",
+      "max_gap_end": "2017-04-09",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "30": {
+      "max_gap_days": 29,
+      "max_gap_start": "2015-09-10",
+      "max_gap_end": "2015-10-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "31": {
+      "max_gap_days": 23,
+      "max_gap_start": "2019-12-09",
+      "max_gap_end": "2020-01-02",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "32": {
+      "max_gap_days": 26,
+      "max_gap_start": "2022-04-17",
+      "max_gap_end": "2022-05-14",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "33": {
+      "max_gap_days": 25,
+      "max_gap_start": "2021-09-05",
+      "max_gap_end": "2021-10-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "34": {
+      "max_gap_days": 34,
+      "max_gap_start": "2023-10-14",
+      "max_gap_end": "2023-11-18",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "35": {
+      "max_gap_days": 35,
+      "max_gap_start": "2018-04-19",
+      "max_gap_end": "2018-05-25",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "36": {
+      "max_gap_days": 27,
+      "max_gap_start": "2016-11-13",
+      "max_gap_end": "2016-12-11",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "37": {
+      "max_gap_days": 25,
+      "max_gap_start": "2021-01-21",
+      "max_gap_end": "2021-02-20",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "38": {
+      "max_gap_days": 26,
+      "max_gap_start": "2016-07-03",
+      "max_gap_end": "2016-07-30",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "39": {
+      "max_gap_days": 38,
+      "max_gap_start": "2014-06-17",
+      "max_gap_end": "2014-07-26",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "40": {
+      "max_gap_days": 26,
+      "max_gap_start": "2018-10-01",
+      "max_gap_end": "2018-10-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "41": {
+      "max_gap_days": 32,
+      "max_gap_start": "2019-10-22",
+      "max_gap_end": "2019-11-24",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "42": {
+      "max_gap_days": 25,
+      "max_gap_start": "2017-08-25",
+      "max_gap_end": "2017-09-20",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "43": {
+      "max_gap_days": 19,
+      "max_gap_start": "2014-05-28",
+      "max_gap_end": "2014-06-17",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "44": {
+      "max_gap_days": 30,
+      "max_gap_start": "2016-04-29",
+      "max_gap_end": "2016-05-30",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "45": {
+      "max_gap_days": 30,
+      "max_gap_start": "2022-03-06",
+      "max_gap_end": "2022-04-06",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "46": {
+      "max_gap_days": 25,
+      "max_gap_start": "2014-07-12",
+      "max_gap_end": "2014-08-07",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "47": {
+      "max_gap_days": 29,
+      "max_gap_start": "2016-12-04",
+      "max_gap_end": "2017-01-03",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "48": {
+      "max_gap_days": 30,
+      "max_gap_start": "2021-02-16",
+      "max_gap_end": "2021-03-19",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "49": {
+      "max_gap_days": 25,
+      "max_gap_start": "2021-11-12",
+      "max_gap_end": "2021-12-08",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "50": {
+      "max_gap_days": 26,
+      "max_gap_start": "2018-08-26",
+      "max_gap_end": "2018-09-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "51": {
+      "max_gap_days": 26,
+      "max_gap_start": "2019-10-04",
+      "max_gap_end": "2019-10-31",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "52": {
+      "max_gap_days": 24,
+      "max_gap_start": "2021-08-06",
+      "max_gap_end": "2021-08-31",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "53": {
+      "max_gap_days": 30,
+      "max_gap_start": "2026-03-09",
+      "max_gap_end": "2026-04-09",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "54": {
+      "max_gap_days": 25,
+      "max_gap_start": "2024-11-26",
+      "max_gap_end": "2024-12-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "55": {
+      "max_gap_days": 42,
+      "max_gap_start": "2020-09-11",
+      "max_gap_end": "2020-10-24",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "56": {
+      "max_gap_days": 23,
+      "max_gap_start": "2020-12-16",
+      "max_gap_end": "2021-01-09",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "57": {
+      "max_gap_days": 30,
+      "max_gap_start": "2014-03-28",
+      "max_gap_end": "2014-04-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "58": {
+      "max_gap_days": 35,
+      "max_gap_start": "2018-01-01",
+      "max_gap_end": "2018-02-06",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "59": {
+      "max_gap_days": 23,
+      "max_gap_start": "2023-02-05",
+      "max_gap_end": "2023-03-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "60": {
+      "max_gap_days": 26,
+      "max_gap_start": "2024-07-27",
+      "max_gap_end": "2024-08-23",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "61": {
+      "max_gap_days": 23,
+      "max_gap_start": "2024-07-06",
+      "max_gap_end": "2024-07-30",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "62": {
+      "max_gap_days": 28,
+      "max_gap_start": "2017-07-24",
+      "max_gap_end": "2017-08-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "63": {
+      "max_gap_days": 30,
+      "max_gap_start": "2020-06-17",
+      "max_gap_end": "2020-07-18",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "64": {
+      "max_gap_days": 25,
+      "max_gap_start": "2018-09-14",
+      "max_gap_end": "2018-10-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "65": {
+      "max_gap_days": 29,
+      "max_gap_start": "2017-05-06",
+      "max_gap_end": "2017-06-05",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "66": {
+      "max_gap_days": 29,
+      "max_gap_start": "2014-11-16",
+      "max_gap_end": "2014-12-16",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "67": {
+      "max_gap_days": 24,
+      "max_gap_start": "2020-02-21",
+      "max_gap_end": "2020-03-17",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "68": {
+      "max_gap_days": 20,
+      "max_gap_start": "2017-05-28",
+      "max_gap_end": "2017-06-18",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "69": {
+      "max_gap_days": 32,
+      "max_gap_start": "2019-06-07",
+      "max_gap_end": "2019-07-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "70": {
+      "max_gap_days": 25,
+      "max_gap_start": "2026-02-07",
+      "max_gap_end": "2026-03-05",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "71": {
+      "max_gap_days": 30,
+      "max_gap_start": "2026-03-11",
+      "max_gap_end": "2026-04-11",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "72": {
+      "max_gap_days": 29,
+      "max_gap_start": "2025-01-22",
+      "max_gap_end": "2025-02-25",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "73": {
+      "max_gap_days": 36,
+      "max_gap_start": "2022-09-06",
+      "max_gap_end": "2022-10-13",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "74": {
+      "max_gap_days": 36,
+      "max_gap_start": "2016-04-04",
+      "max_gap_end": "2016-05-11",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "75": {
+      "max_gap_days": 22,
+      "max_gap_start": "2014-07-18",
+      "max_gap_end": "2014-08-10",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "76": {
+      "max_gap_days": 29,
+      "max_gap_start": "2026-02-13",
+      "max_gap_end": "2026-03-15",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "77": {
+      "max_gap_days": 25,
+      "max_gap_start": "2021-08-07",
+      "max_gap_end": "2021-09-02",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "78": {
+      "max_gap_days": 33,
+      "max_gap_start": "2017-09-02",
+      "max_gap_end": "2017-10-06",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "79": {
+      "max_gap_days": 23,
+      "max_gap_start": "2019-03-11",
+      "max_gap_end": "2019-04-04",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "80": {
+      "max_gap_days": 40,
+      "max_gap_start": "2023-05-28",
+      "max_gap_end": "2023-07-08",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "81": {
+      "max_gap_days": 27,
+      "max_gap_start": "2023-07-30",
+      "max_gap_end": "2023-08-27",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "82": {
+      "max_gap_days": 26,
+      "max_gap_start": "2022-06-25",
+      "max_gap_end": "2022-07-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "83": {
+      "max_gap_days": 27,
+      "max_gap_start": "2016-07-06",
+      "max_gap_end": "2016-08-03",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "84": {
+      "max_gap_days": 29,
+      "max_gap_start": "2014-06-01",
+      "max_gap_end": "2014-07-01",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "85": {
+      "max_gap_days": 32,
+      "max_gap_start": "2021-03-30",
+      "max_gap_end": "2021-05-02",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "86": {
+      "max_gap_days": 28,
+      "max_gap_start": "2016-11-08",
+      "max_gap_end": "2016-12-07",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "87": {
+      "max_gap_days": 23,
+      "max_gap_start": "2014-09-28",
+      "max_gap_end": "2014-10-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "88": {
+      "max_gap_days": 21,
+      "max_gap_start": "2014-09-24",
+      "max_gap_end": "2014-10-16",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "89": {
+      "max_gap_days": 24,
+      "max_gap_start": "2026-05-18",
+      "max_gap_end": "2026-06-12",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "90": {
+      "max_gap_days": 23,
+      "max_gap_start": "2017-03-09",
+      "max_gap_end": "2017-04-02",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "91": {
+      "max_gap_days": 25,
+      "max_gap_start": "2014-08-19",
+      "max_gap_end": "2014-09-14",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "92": {
+      "max_gap_days": 23,
+      "max_gap_start": "2014-04-04",
+      "max_gap_end": "2014-04-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "93": {
+      "max_gap_days": 23,
+      "max_gap_start": "2018-04-04",
+      "max_gap_end": "2018-04-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "94": {
+      "max_gap_days": 23,
+      "max_gap_start": "2020-07-24",
+      "max_gap_end": "2020-08-17",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "95": {
+      "max_gap_days": 34,
+      "max_gap_start": "2024-07-18",
+      "max_gap_end": "2024-08-22",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "96": {
+      "max_gap_days": 28,
+      "max_gap_start": "2015-05-25",
+      "max_gap_end": "2015-06-23",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "97": {
+      "max_gap_days": 25,
+      "max_gap_start": "2018-05-02",
+      "max_gap_end": "2018-05-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "98": {
+      "max_gap_days": 24,
+      "max_gap_start": "2015-11-10",
+      "max_gap_end": "2015-12-05",
+      "source_url": "https://mketqua.net/loto-gan"
+    },
+    "99": {
+      "max_gap_days": 26,
+      "max_gap_start": "2022-04-01",
+      "max_gap_end": "2022-04-28",
+      "source_url": "https://mketqua.net/loto-gan"
+    }
+  }
+}
