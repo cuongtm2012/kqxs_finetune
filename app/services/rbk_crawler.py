@@ -60,7 +60,7 @@ def _write_cache(d: date, limit: int, data: dict, lon: int = 1) -> None:
 
 def _build_url(limit: int, ngay: str, lon: int = 1, nhay: int = 1) -> str:
     from urllib.parse import quote
-    ngay_encoded = quote(ngay)
+    ngay_encoded = quote(ngay, safe="")
     return RBK_NET_CAU_URL.format(limit=limit, ngay=ngay_encoded, nhay=nhay, lon=lon)
 
 

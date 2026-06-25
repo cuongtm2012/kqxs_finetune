@@ -46,6 +46,11 @@ def run_report() -> str:
     lines = []
     lines.append(f"🎯 XSMB — {target_weekday}, {target_date}")
     lines.append(f"📌 Đề hôm qua: **{yesterday_de}**")
+    meta = loto_result.get("meta", {})
+    conf = meta.get("confidence", 0)
+    if conf > 0:
+        bar = "█" * int(conf * 10) + "░" * (10 - int(conf * 10))
+        lines.append(f"📈 Độ tin cậy: {conf:.0%} {bar}")
     lines.append("")
 
     # Top 20 Lô

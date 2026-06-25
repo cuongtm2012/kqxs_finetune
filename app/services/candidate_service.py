@@ -89,12 +89,44 @@ DE_COND_PREV_MIN_LIFT = 2.0
 SAME_DATE_MIN_LIFT = 1.5
 
 
+# ——— Filter source groups for consensus detection ———
+# Filters that share the same data source should NOT count as independent.
+FILTER_SOURCE_GROUPS = {
+    "positional": {"lag-1", "same-day"},                     # both from yesterday_lotos
+    "bayesian": {"bayesian-update", "de-bayesian-update"},   # same model
+    "chi-square": {"chi-square", "de-chi-square"},           # same model
+    "frequency": {"frequency-hot", "frequency-rank", "frequency-trend",
+                  "de-frequency-rank", "de-frequency-trend"},# same data
+    "rbk": {"rbk-cau", "rbk-cau-no-loan"},                   # both from RBK
+    "cycle": {"gap-hot", "max-cycle", "cycle-history"},      # same gap data
+    "calendar": {"calendar", "de-calendar"},                 # same weekday data
+    "cond-freq": {"cond-freq-loto", "cond-freq-de", "de-cond-prev"},  # same conditional frequency
+}
+ALL_FILTER_GROUPS = set(FILTER_SOURCE_GROUPS.keys())
+
+
+def _independent_groups(breakdown_keys: set[str]) -> list[str]:
+    """How many independent filter groups does a number trigger?"""
+    triggered: set[str] = set()
+    for gname, members in FILTER_SOURCE_GROUPS.items():
+        if breakdown_keys & members:
+            triggered.add(gname)
+    # standalone filters not in any group count as independent
+    grouped = set()
+    for members in FILTER_SOURCE_GROUPS.values():
+        grouped.update(members)
+    standalone = breakdown_keys - grouped
+    for _ in standalone:
+        triggered.add("standalone")
+    return list(triggered)
+
+
 def _score_contribution(filter_key: str, detail: dict) -> float:
     lift = float(detail.get("lift", 1))
     if filter_key in ("lag-1", "same-day"):
         return min((lift - 1) * 2, 0.5)
     if filter_key == "max-cycle":
-        return detail.get("pct_of_max", 0) / 100.0
+        return min(detail.get("pct_of_max", 0) / 100.0, 0.5)
     if filter_key == "gap-hot":
         return min(detail.get("current_gap", 0) / 25.0, 0.5)
     if filter_key == "cycle-history":
@@ -118,7 +150,7 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
     if filter_key == "de-intersection":
         cf_lift = float(detail.get("cf_lift", detail.get("lift", 1)))
         rbk_cau = int(detail.get("rbk_cau", 0))
-        return min((cf_lift - 1) * 2, 0.6) + min(rbk_cau / 8.0, 0.5)
+        return min(min((cf_lift - 1) * 2, 0.5) + min(rbk_cau / 8.0, 0.3), 0.7)
     if filter_key == "de-cf":
         return min((lift - 1) * 2, 0.5)
     if filter_key == "de-frequency-rank":
@@ -158,7 +190,20 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
 
 
 def _compute_score(breakdown: dict[str, float]) -> float:
-    return round(sum(breakdown.values()), 2)
+    raw_score = sum(breakdown.values())
+
+    # Consensus bonus: if ≥3 independent filter groups triggered, boost
+    groups = _independent_groups(set(breakdown.keys()))
+    n_independent = len(groups)
+
+    if n_independent >= 4:
+        consensus_bonus = 0.25
+    elif n_independent == 3:
+        consensus_bonus = 0.12
+    else:
+        consensus_bonus = 0.0
+
+    return round(raw_score + consensus_bonus, 2)
 
 
 def _resolve_dates(target_date: Optional[str]) -> tuple[str, str]:
@@ -1052,6 +1097,41 @@ def build_candidates(
         "sort": sort,
         "query_time_ms": elapsed_ms,
     }
+
+    # ——— Confidence score for this draw ———
+    # Based on avg score of top 5, spread between top1 and top5,
+    # and number of independent sources triggered in top5
+    if candidates:
+        top5 = candidates[:5]
+        top1_score = top5[0]["score"]
+        top5_scores = [c["score"] for c in top5]
+        avg_top5 = sum(top5_scores) / len(top5_scores)
+        spread = top1_score - min(top5_scores)
+
+        # How many independent groups across top5?
+        all_groups: set[str] = set()
+        for c in top5:
+            all_groups.update(set(_independent_groups(set(c.get("score_breakdown", {}).keys()))))
+        n_signal_sources = len(all_groups)
+
+        # Confidence: 0.0-1.0
+        # High avg_score + tight spread + many sources = confident
+        score_conf = min(avg_top5 / 3.0, 1.0)  # avg_top5=3.0 → 1.0
+        spread_conf = min(spread / 1.0, 1.0)  # spread=1.0 → confident (clear winner)
+        source_conf = min(n_signal_sources / 5.0, 1.0)
+
+        confidence = round((score_conf * 0.5 + spread_conf * 0.25 + source_conf * 0.25), 2)
+        meta["confidence"] = confidence
+        meta["confidence_detail"] = {
+            "avg_top5_score": round(avg_top5, 2),
+            "top1_score": top1_score,
+            "spread_top5": round(spread, 2),
+            "signal_sources": n_signal_sources,
+            "breakdown": f"score({score_conf:.2f}) + spread({spread_conf:.2f}) + sources({source_conf:.2f})",
+        }
+    else:
+        meta["confidence"] = 0.0
+        meta["confidence_detail"] = {"avg_top5_score": 0, "top1_score": 0, "spread_top5": 0, "signal_sources": 0}
     if target == "loto":
         meta["total_lotos_scanned"] = len(value_filters)
     else:
