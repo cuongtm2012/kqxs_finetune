@@ -28,6 +28,7 @@ from app.services.stats_service import (
     frequency_rank_hot_matches,
     frequency_trend_matches,
     gap_hot_matches,
+    get_conditional_frequency,
     get_day_context,
     get_loto_frequency_summary,
     get_loto_frequency_trend,
@@ -53,11 +54,13 @@ DE_TARGET_WARNING = (
 DE_FILTER_PRIORITY = {
     "de-intersection": 5,
     "de-cf": 4,
+    "de-cond-prev": 4,
     "de-frequency-trend": 4,
     "de-digit-trend": 3,
     "de-loto-boost": 3,
     "de-chi-square": 3,
     "de-bayesian-update": 3,
+    "cond-freq-de": 3,
     "de-frequency-rank": 2,
     "de-lag1": 2,
     "de-calendar": 1,
@@ -78,6 +81,12 @@ DE_DIGIT_TREND_MIN_MOMENTUM = 2.0
 PREDICTION_MODEL_TOP_N = 40
 CHI_SQUARE_MIN_SCORE = 0.60
 BAYESIAN_UPDATE_MIN_SCORE = 0.50
+COND_FREQ_LOTO_MIN_LIFT = 2.0
+COND_FREQ_LOTO_MIN_OCC = 3
+COND_FREQ_DE_MIN_LIFT = 3.0
+COND_FREQ_DE_MIN_OCC = 2
+DE_COND_PREV_MIN_LIFT = 2.0
+SAME_DATE_MIN_LIFT = 1.5
 
 
 def _score_contribution(filter_key: str, detail: dict) -> float:
@@ -120,9 +129,15 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
     if filter_key == "de-digit-trend":
         momentum = float(detail.get("momentum_pp", detail.get("momentum", 0)))
         return min(momentum / 20.0, 0.4)
-    if filter_key == "conditional-frequency":
-        return min((lift - 1) * 2, 0.5)
-    if filter_key == "rbk-cau":
+    if filter_key == "cond-freq-loto":
+        return min((lift - 1) * 0.5, 0.6)
+    if filter_key == "cond-freq-de":
+        return min((lift - 1) * 0.3, 0.7)
+    if filter_key == "de-cond-prev":
+        return min((lift - 1) * 0.5, 0.8)
+    if filter_key == "same-date":
+        return min((lift - 1) * 0.3, 0.5)
+    if filter_key in ("rbk-cau", "rbk-cau-no-loan"):
         return min(float(detail.get("weight", 0)) * 0.5, 0.5)
     if filter_key in ("chi-square", "de-chi-square"):
         z = float(detail.get("z", 0))
@@ -459,21 +474,178 @@ def _de_cf_filter_matches(yesterday_de: str, weekday: int) -> list[FilterMatch]:
     )
 
 
-def _conditional_frequency_filter_matches(yesterday_de: str, weekday: int) -> list[FilterMatch]:
-    return _dict_to_matches(
-        conditional_frequency_matches(yesterday_de, target_weekday=weekday, min_lift=1.05),
-        lambda lot, info: (
-            f"conditional-frequency: sau ĐB {info['db_loto']} → {lot} "
-            f"{info['count']}/{info['total_samples']} ({info['pct']:.1f}%, lift {info['lift']}x)"
-        ),
+def _cond_freq_loto_matches(
+    yesterday_de: str,
+    min_lift: float = COND_FREQ_LOTO_MIN_LIFT,
+    min_occ: int = COND_FREQ_LOTO_MIN_OCC,
+) -> list[FilterMatch]:
+    if not yesterday_de:
+        return []
+    result = get_conditional_frequency(
+        db_loto=yesterday_de,
+        target_weekday=None,
+        min_occ=min_occ,
+        limit=20,
+        sort="lift",
     )
+    matches: list[FilterMatch] = []
+    for row in result["loto_frequency"]:
+        if row["lift"] < min_lift:
+            continue
+        reason = (
+            f"cond-freq-loto: sau đề {yesterday_de} loto {row['loto']} "
+            f"về {row['count']}/{result['total_samples']} lần "
+            f"(lift {row['lift']:.2f}x)"
+        )
+        matches.append(
+            (
+                row["loto"],
+                reason,
+                {
+                    "lift": row["lift"],
+                    "occurrences": row["count"],
+                    "total_samples": result["total_samples"],
+                },
+            )
+        )
+    return matches
+
+
+def _cond_freq_de_matches(
+    yesterday_de: str,
+    min_lift: float = COND_FREQ_DE_MIN_LIFT,
+    min_occ: int = COND_FREQ_DE_MIN_OCC,
+) -> list[FilterMatch]:
+    if not yesterday_de:
+        return []
+    result = get_conditional_frequency(
+        db_loto=yesterday_de,
+        target_weekday=None,
+        min_occ=min_occ,
+        limit=20,
+        sort="lift",
+    )
+    matches: list[FilterMatch] = []
+    for row in result["loto_frequency"]:
+        if row["lift"] < min_lift:
+            continue
+        reason = (
+            f"cond-freq-de: sau đề {yesterday_de} đề {row['loto']} "
+            f"về {row['count']}/{result['total_samples']} lần "
+            f"(lift {row['lift']:.2f}x)"
+        )
+        matches.append(
+            (
+                row["loto"],
+                reason,
+                {
+                    "lift": row["lift"],
+                    "occurrences": row["count"],
+                    "total_samples": result["total_samples"],
+                },
+            )
+        )
+    return matches
+
+
+def _de_cond_prev_matches(
+    yesterday_de: str,
+    min_lift: float = DE_COND_PREV_MIN_LIFT,
+    min_occ: int = 2,
+) -> list[FilterMatch]:
+    if not yesterday_de:
+        return []
+    result = get_conditional_frequency(
+        db_loto=yesterday_de,
+        target_weekday=None,
+        min_occ=min_occ,
+        limit=10,
+        sort="lift",
+    )
+    matches: list[FilterMatch] = []
+    for row in result["loto_frequency"]:
+        if row["lift"] < min_lift:
+            continue
+        reason = (
+            f"de-cond-prev: đề {yesterday_de}→{row['loto']} "
+            f"{row['count']} lần (lift {row['lift']:.1f}x)"
+        )
+        matches.append(
+            (
+                row["loto"],
+                reason,
+                {
+                    "lift": row["lift"],
+                    "occurrences": row["count"],
+                    "total_samples": result["total_samples"],
+                },
+            )
+        )
+    return matches
+
+
+def _same_date_matches(
+    target_date: str,
+    min_lift: float = SAME_DATE_MIN_LIFT,
+) -> list[FilterMatch]:
+    dt = date.fromisoformat(target_date)
+    rows = fetch_all(
+        """
+        SELECT p.last_two AS loto, COUNT(*) AS cnt
+        FROM draws d
+        JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB'
+          AND EXTRACT(MONTH FROM d.draw_date) = %s
+          AND EXTRACT(DAY FROM d.draw_date) = %s
+          AND d.draw_date < %s::date
+          AND p.prize_level = 'DB'
+        GROUP BY p.last_two
+        ORDER BY cnt DESC
+        """,
+        (dt.month, dt.day, target_date),
+    )
+    if not rows:
+        return []
+
+    total = sum(int(r["cnt"]) for r in rows)
+    matches: list[FilterMatch] = []
+    for row in rows:
+        cnt = int(row["cnt"])
+        lift = (cnt / total) / 0.01 if total else 0.0
+        if lift < min_lift:
+            continue
+        reason = (
+            f"same-date: ngày {dt.month}/{dt.day} lịch sử "
+            f"{row['loto']} về {cnt}/{total} lần (lift {lift:.1f}x)"
+        )
+        matches.append(
+            (
+                row["loto"],
+                reason,
+                {
+                    "lift": round(lift, 2),
+                    "occurrences": cnt,
+                    "total_years": total,
+                },
+            )
+        )
+    return matches
 
 
 def _rbk_cau_filter_matches(as_of_date: str) -> list[FilterMatch]:
     return _dict_to_matches(
-        rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1),
+        rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1, lon=0, nhay=1),
         lambda lot, info: (
-            f"rbk-cau: {lot} có {info['cau_count']} cầu RBK (weight {info['weight']})"
+            f"rbk-cau: {lot} có {info['cau_count']} cầu RBK (không lộn, weight {info['weight']})"
+        ),
+    )
+
+
+def _rbk_cau_no_loan_filter_matches(as_of_date: str) -> list[FilterMatch]:
+    return _dict_to_matches(
+        rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1, lon=1, nhay=1),
+        lambda lot, info: (
+            f"rbk-cau-no-loan: {lot} có {info['cau_count']} cầu RBK (lộn, weight {info['weight']})"
         ),
     )
 
@@ -694,11 +866,18 @@ def _loto_filter_defs(
         {"key": "calendar", "min_lift": 1.05, "fn": lambda: _calendar_matches(weekday)},
         {"key": "lo-roi", "min_lift": 1.05, "window": 3, "fn": lambda: _lo_roi_matches(yesterday_de)},
         {
-            "key": "conditional-frequency",
-            "min_lift": 1.05,
-            "fn": lambda: _conditional_frequency_filter_matches(yesterday_de, weekday),
+            "key": "cond-freq-loto",
+            "min_lift": COND_FREQ_LOTO_MIN_LIFT,
+            "min_occ": COND_FREQ_LOTO_MIN_OCC,
+            "fn": lambda: _cond_freq_loto_matches(yesterday_de),
         },
-        {"key": "rbk-cau", "limit": 5, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
+        {
+            "key": "same-date",
+            "min_occ": 1,
+            "fn": lambda: _same_date_matches(target_date),
+        },
+        {"key": "rbk-cau", "limit": 5, "lon": 1, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
+        {"key": "rbk-cau-no-loan", "limit": 5, "lon": 0, "fn": lambda: _rbk_cau_no_loan_filter_matches(as_of_date)},
         {
             "key": "chi-square",
             "top_n": PREDICTION_MODEL_TOP_N,
@@ -735,6 +914,16 @@ def _de_filter_defs(
             "fn": lambda: _de_cf_filter_matches(yesterday_de, weekday),
         },
         {"key": "de-lag1", "min_lift": 1.05, "fn": lambda: _de_lag1_filter_matches(yesterday_de)},
+        {
+            "key": "de-cond-prev",
+            "fn": lambda: _de_cond_prev_matches(yesterday_de),
+        },
+        {
+            "key": "cond-freq-de",
+            "min_lift": COND_FREQ_DE_MIN_LIFT,
+            "min_occ": COND_FREQ_DE_MIN_OCC,
+            "fn": lambda: _cond_freq_de_matches(yesterday_de),
+        },
         {"key": "de-calendar", "min_lift": 1.05, "fn": lambda: _de_calendar_filter_matches(weekday)},
         {
             "key": "de-loto-boost",
@@ -766,6 +955,8 @@ def _de_filter_defs(
             "top_n": PREDICTION_MODEL_TOP_N,
             "fn": lambda: _bayesian_update_matches(as_of_date, target_date, TARGET_DE),
         },
+        {"key": "rbk-cau", "limit": 5, "lon": 1, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
+        {"key": "rbk-cau-no-loan", "limit": 5, "lon": 0, "fn": lambda: _rbk_cau_no_loan_filter_matches(as_of_date)},
     ]
 
 

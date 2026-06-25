@@ -22,20 +22,20 @@ CACHE_TTL = timedelta(days=1)
 
 RBK_NET_CAU_URL = (
     "https://rongbachkim.net/soicau.html?submit=1&setmode=full&exactlimit=0"
-    "&limit={limit}&ngay={ngay}&nhay=1&lon=1"
+    "&limit={limit}&ngay={ngay}&nhay={nhay}&lon={lon}"
 )
 
 
 def _format_ngay(d: date) -> str:
-    return d.strftime("%Y-%m-%d")
+    return d.strftime("%d/%m/%Y")
 
 
-def _cache_path(d: date, limit: int) -> Path:
-    return CACHE_DIR / f"{d.isoformat()}_{limit}.json"
+def _cache_path(d: date, limit: int, lon: int = 1) -> Path:
+    return CACHE_DIR / f"{d.isoformat()}_{limit}_{lon}.json"
 
 
-def _read_cache(d: date, limit: int, allow_stale: bool = False) -> Optional[dict]:
-    path = _cache_path(d, limit)
+def _read_cache(d: date, limit: int, lon: int = 1, allow_stale: bool = False) -> Optional[dict]:
+    path = _cache_path(d, limit, lon)
     if not path.exists():
         return None
     try:
@@ -49,17 +49,19 @@ def _read_cache(d: date, limit: int, allow_stale: bool = False) -> Optional[dict
         return None
 
 
-def _write_cache(d: date, limit: int, data: dict) -> None:
+def _write_cache(d: date, limit: int, data: dict, lon: int = 1) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _cache_path(d, limit)
+    path = _cache_path(d, limit, lon)
     path.write_text(
         json.dumps({"cached_at": datetime.now().isoformat(), "data": data}, ensure_ascii=False),
         encoding="utf-8",
     )
 
 
-def _build_url(limit: int, ngay: str) -> str:
-    return RBK_NET_CAU_URL.format(limit=limit, ngay=ngay)
+def _build_url(limit: int, ngay: str, lon: int = 1, nhay: int = 1) -> str:
+    from urllib.parse import quote
+    ngay_encoded = quote(ngay)
+    return RBK_NET_CAU_URL.format(limit=limit, ngay=ngay_encoded, nhay=nhay, lon=lon)
 
 
 def _parse_cau_html(html: str) -> dict:
@@ -141,8 +143,8 @@ def _recommend(cau_lap: list[dict], min_cau: int) -> tuple[list[str], dict[str, 
     return recommended, dict(number_counts)
 
 
-def crawl_rbk_cau(limit: int, ngay: str) -> dict:
-    url = _build_url(limit, ngay)
+def crawl_rbk_cau(limit: int, ngay: str, lon: int = 1, nhay: int = 1) -> dict:
+    url = _build_url(limit, ngay, lon, nhay)
     html = obtain_content(url)
     if not html:
         url = settings.caudep_url % (limit, ngay, 1, 1)
@@ -174,21 +176,23 @@ def get_rbk_cau(
     date_str: Optional[str] = None,
     limit: int = 5,
     min_cau: int = 1,
+    lon: int = 1,
+    nhay: int = 1,
     allow_stale_cache: bool = False,
     crawl_if_missing: bool = True,
 ) -> dict:
     start_ms = time.perf_counter()
     target = date.fromisoformat(date_str) if date_str else date.today()
     ngay = _format_ngay(target)
-    cached = _read_cache(target, limit, allow_stale=allow_stale_cache)
+    cached = _read_cache(target, limit, lon=lon, allow_stale=allow_stale_cache)
     from_cache = cached is not None
 
     if cached:
         data = cached
     elif crawl_if_missing:
-        data = crawl_rbk_cau(limit, ngay)
+        data = crawl_rbk_cau(limit, ngay, lon, nhay)
         if not data.get("error"):
-            _write_cache(target, limit, data)
+            _write_cache(target, limit, data, lon=lon)
     else:
         data = {
             "error": "cache_miss",
@@ -231,8 +235,10 @@ def rbk_cau_loto_matches(
     as_of_date: str,
     limit: int = 5,
     min_cau: int = 1,
+    lon: int = 1,
+    nhay: int = 1,
 ) -> dict[str, dict]:
-    result = get_rbk_cau(date_str=as_of_date, limit=limit, min_cau=min_cau)
+    result = get_rbk_cau(date_str=as_of_date, limit=limit, min_cau=min_cau, lon=lon, nhay=nhay)
     counts = result.get("number_counts") or {}
     if not counts and result.get("recommended"):
         counts = {lot: 1 for lot in result["recommended"]}
@@ -305,6 +311,7 @@ def run_rbk_cau_backtest(days: int = 30) -> dict:
             result = get_rbk_cau(
                 date_str=as_of.isoformat(),
                 limit=lim,
+                lon=1,
                 allow_stale_cache=True,
                 crawl_if_missing=True,
             )
