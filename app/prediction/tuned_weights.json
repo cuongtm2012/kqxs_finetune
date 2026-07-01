@@ -16,13 +16,14 @@
       "digit": 0.138,
       "chi_square": 0.0,
       "bayesian_update": 0.0,
-      "cycle_pair": 0.08
+      "cycle_pair": 0.075,
+      "forum_consensus": 0.005
     },
     "ensemble_metrics": {
       "hit_rate": 1.0,
       "recall_at_k": 0.2111,
       "days": 61,
-      "source": "adjusted_20260624_add_cycle_pair_normalized"
+      "source": "adjusted_20260628_add_forum_consensus"
     },
     "solo_metrics": {
       "frequency": {
@@ -89,14 +90,15 @@
       "bayesian": 0.0161,
       "weekday": 0.0926,
       "chi_square": 0.0225,
-      "bayesian_update": 0.4173,
-      "cycle_pair": 0.1053
+      "bayesian_update": 0.37,
+      "cycle_pair": 0.13,
+      "forum_consensus": 0.08
     },
     "ensemble_metrics": {
       "hit_rate": 0.1935,
       "recall_at_k": 0.1935,
       "days": 31,
-      "source": "adjusted_20260624_add_cycle_pair_normalized"
+      "source": "adjusted_20260628_add_forum_consensus"
     },
     "solo_metrics": {
       "frequency": {

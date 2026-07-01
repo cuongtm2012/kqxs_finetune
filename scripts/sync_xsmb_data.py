@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Sync XSMB data from xosodaiphat.com to RBK database.
+"""Sync XSMB data from xosodaiphat.com to database.
 Runs before xsmb_daily_report.py to ensure latest draws are available."""
 
 import os
 import re
 import sys
+from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
-PROJECT_ROOT = "/Volumes/SSD_1TB/PROJECT/RBK/analysis-rbk-py"
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python3")
 if os.path.exists(VENV_PYTHON) and sys.executable != VENV_PYTHON:
     os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)

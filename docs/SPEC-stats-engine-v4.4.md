@@ -10,7 +10,7 @@
 
 1. **Lô:** frequency rank/trend theo cửa sổ **30→300 ngày**; tích hợp vào candidates.
 2. **Đề:** frequency rank/trend + **đầu/tổng** trend; cửa sổ **1y→5y** (tối đa 1825 ngày).
-3. **Đề ↔ Intersection:** pick CF∩RBK xuất hiện trong top đề candidates.
+3. **Đề ↔ Intersection:** pick CF∩cầu xuất hiện trong top đề candidates.
 
 ---
 
@@ -74,7 +74,7 @@
 | `calendar` | lift ≥ 1.05 | `(lift−1)×3`, cap 0.5 |
 | `lo-roi` | lift > 1.0 | `(lift−1)×1`, cap 1.0 |
 | `conditional-frequency` | lift ≥ 1.05 | `(lift−1)×2`, cap 0.5 |
-| `rbk-cau` | có cầu RBK | `weight×0.5`, cap 0.5 |
+| `rbk-cau` | có cầu lặp | `weight×0.5`, cap 0.5 |
 
 `min_filters` max: **12**.
 
@@ -82,7 +82,7 @@
 
 | Filter | Priority | Threshold | Score |
 |--------|----------|-----------|-------|
-| **`de-intersection`** | 5 | CF∩RBK pick | `(cf_lift−1)×2` cap 0.6 + `rbk/8` cap 0.5 |
+| **`de-intersection`** | 5 | CF∩cầu pick | `(cf_lift−1)×2` cap 0.6 + `rbk/8` cap 0.5 |
 | **`de-cf`** | 4 | lift ≥ 3.0 | `(lift−1)×2`, cap 0.5 |
 | **`de-frequency-trend`** | 4 | momentum ≥ 0.8pp hoặc stable-hot | `momentum/15`, cap 0.5 |
 | **`de-digit-trend`** | 3 | đầu/tổng momentum ≥ 2pp | `momentum/20`, cap 0.4 |
@@ -122,7 +122,7 @@ Kết quả tham khảo:
 
 - **Lô top:** 96, 59, 52, 17, 84… (trending: 96, 52, 84, 85…)
 - **Đề top:** 65, **63** (intersection), 14…
-- **Intersection pick:** **63** (CF 3.51x, RBK 5 cầu)
+- **Intersection pick:** **63** (CF 3.51x, 5 cầu)
 - **Đề trending 1y vs 5y:** 92 +1.15pp, 83 +0.88pp (đầu 8, tổng 1)
 
 ---

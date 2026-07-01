@@ -17,10 +17,10 @@ from app.utils.http_util import obtain_content
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path("/tmp/rbk_cache")
+CACHE_DIR = Path("/tmp/app_cache")
 CACHE_TTL = timedelta(days=1)
 
-RBK_NET_CAU_URL = (
+NET_CAU_URL = (
     "https://rongbachkim.net/soicau.html?submit=1&setmode=full&exactlimit=0"
     "&limit={limit}&ngay={ngay}&nhay={nhay}&lon={lon}"
 )
@@ -61,7 +61,7 @@ def _write_cache(d: date, limit: int, data: dict, lon: int = 1) -> None:
 def _build_url(limit: int, ngay: str, lon: int = 1, nhay: int = 1) -> str:
     from urllib.parse import quote
     ngay_encoded = quote(ngay, safe="")
-    return RBK_NET_CAU_URL.format(limit=limit, ngay=ngay_encoded, nhay=nhay, lon=lon)
+    return NET_CAU_URL.format(limit=limit, ngay=ngay_encoded, nhay=nhay, lon=lon)
 
 
 def _parse_cau_html(html: str) -> dict:
@@ -259,7 +259,7 @@ def rbk_cau_loto_matches(
     return matches
 
 
-RBK_BACKTEST_LIMITS = (1, 3, 5, 7, 9)
+BACKTEST_LIMITS = (1, 3, 5, 7, 9)
 
 
 def run_rbk_cau_backtest(days: int = 30) -> dict:
@@ -295,7 +295,7 @@ def run_rbk_cau_backtest(days: int = 30) -> dict:
             "total_recommended": 0,
             "total_actual": 0,
         }
-        for lim in RBK_BACKTEST_LIMITS
+        for lim in BACKTEST_LIMITS
     }
 
     for target_date in target_dates:
@@ -307,7 +307,7 @@ def run_rbk_cau_backtest(days: int = 30) -> dict:
         if not actual:
             continue
 
-        for lim in RBK_BACKTEST_LIMITS:
+        for lim in BACKTEST_LIMITS:
             result = get_rbk_cau(
                 date_str=as_of.isoformat(),
                 limit=lim,
@@ -333,7 +333,7 @@ def run_rbk_cau_backtest(days: int = 30) -> dict:
     limits_out: list[dict] = []
     best_limit: Optional[int] = None
     best_score = -1.0
-    for lim in RBK_BACKTEST_LIMITS:
+    for lim in BACKTEST_LIMITS:
         stats = limit_stats[lim]
         evaluated = stats["days_evaluated"]
         hit_rate = stats["hit_days"] / evaluated if evaluated else 0.0
@@ -366,6 +366,6 @@ def run_rbk_cau_backtest(days: int = 30) -> dict:
         "limits": limits_out,
         "meta": {
             "query_time_ms": elapsed_ms,
-            "note": "RBK cau as_of_date predicts next draw; stale cache allowed for historical dates",
+            "note": "cau as_of_date predicts next draw; stale cache allowed for historical dates",
         },
     }

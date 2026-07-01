@@ -1,11 +1,16 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="RBK_", env_file=".env", extra="ignore")
+    # Personalized env vars.
+    model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")
 
-    port: int = 8081
-    database_url: str = "postgresql://rbk:rbk@127.0.0.1:5436/rbk"
+    port: int = Field(18715, validation_alias="APP_PORT")
+    database_url: str = Field(
+        "postgresql://rbk:rbk@127.0.0.1:5436/rbk",
+        validation_alias="APP_DATABASE_URL",
+    )
 
     url: str = "https://rongbachkim.com/ketqua.php?getkq&ngay=%s&days=1&wday=0"
     chotkq: str = "https://rongbachkim.com/chot.php?getlist&ngay=%s&lastid=0&lastupdate=0"
@@ -19,7 +24,10 @@ class Settings(BaseSettings):
     rss_mt_url: str = "https://xskt.com.vn/rss-feed/mien-trung-xsmt.rss"
     rss_mb_url: str = "https://xskt.com.vn/rss-feed/mien-bac-xsmb.rss"
 
-    enable_scheduler: bool = True
+    enable_scheduler: bool = Field(
+        True,
+        validation_alias="APP_ENABLE_SCHEDULER",
+    )
     scrape_delay_seconds: float = 1.0
 
 

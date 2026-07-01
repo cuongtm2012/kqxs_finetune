@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import close_pool, fetch_one, init_pool
-from app.routers import analytics, kqxs, predictions, rbk, stats, ums
+from app.routers import analytics, forum, kqxs, predictions, rbk, stats, ums
 from app.scheduler import create_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
-app = FastAPI(title="analysis-rbk", lifespan=lifespan)
+app = FastAPI(title="Lottery Analytics", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +45,7 @@ app.include_router(ums.router)
 app.include_router(analytics.router)
 app.include_router(stats.router)
 app.include_router(predictions.router)
+app.include_router(forum.router)
 
 
 @app.get("/health")

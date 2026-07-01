@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forum Collector</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>Forum Collector</h1>
+    <div class="header-actions">
+      <button id="btn-toggle-settings" type="button" class="icon-btn" title="Cài đặt" aria-expanded="false" aria-controls="settings-panel">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+      </button>
+      <span id="status-badge" class="badge idle">—</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button id="tab-collect" type="button" class="tab active" role="tab" aria-selected="true">Thu thập</button>
+    <button id="tab-reco" type="button" class="tab" role="tab" aria-selected="false">Đề xuất</button>
+  </nav>
+
+  <div id="panel-collect" class="tab-panel">
+    <section class="card">
+      <div class="row"><span>Ngày quay</span><strong id="target-date">—</strong></div>
+      <div class="row"><span>Cửa sổ</span><span id="window-range" class="muted">—</span></div>
+      <div class="row"><span>Posts</span><strong id="post-count">0</strong></div>
+      <div class="row"><span>Mới (poll cuối)</span><strong id="new-posts">0</strong></div>
+      <div class="row"><span>Poll lúc</span><span id="last-poll" class="muted">—</span></div>
+      <div class="row"><span>Kết quả poll</span><span id="last-poll-status" class="muted">—</span></div>
+      <div class="row"><span>Đăng nhập</span><span id="auth-status-short" class="muted">—</span></div>
+    </section>
+
+    <section class="card actions">
+      <button id="btn-poll" type="button">Poll ngay</button>
+      <button id="btn-export" type="button" class="secondary">Export JSON</button>
+      <button id="btn-clear" type="button" class="danger">Xóa session</button>
+    </section>
+  </div>
+
+  <div id="panel-reco" class="tab-panel hidden" hidden>
+    <div id="reco-loading" class="reco-loading hidden" hidden aria-live="polite" aria-busy="false">
+      <div class="reco-loading-bar" role="progressbar">
+        <div class="reco-loading-bar-fill"></div>
+      </div>
+      <p id="reco-loading-text" class="reco-loading-text">Đang tải đề xuất…</p>
+    </div>
+
+    <div id="reco-content" class="reco-content">
+    <section class="card reco-panel reco-panel-expert">
+      <h2 class="reco-panel-title">Theo cao thủ <span class="muted">(trọng số)</span></h2>
+      <div class="row"><span>BTL lô</span><strong id="reco-btl">—</strong></div>
+      <div class="row"><span>Bao lô 9</span><span id="reco-bao" class="muted nums">—</span></div>
+      <div class="row"><span>Xiên 2</span><span id="reco-xien" class="muted">—</span></div>
+      <div class="row"><span>Đề top 4</span><span id="reco-de" class="muted nums">—</span></div>
+      <div class="row"><span>Chạm đề</span><span id="reco-cham" class="muted">—</span></div>
+    </section>
+
+    <section class="card reco-panel reco-panel-consensus">
+      <h2 class="reco-panel-title">Theo đồng thuận <span class="muted">(số người chốt)</span></h2>
+      <p id="reco-consensus-hint" class="reco-consensus-hint muted hidden"></p>
+      <div class="row"><span>BTL lô</span><strong id="reco-consensus-btl">—</strong></div>
+      <div class="row"><span>Bao lô 9</span><span id="reco-consensus-bao" class="muted nums">—</span></div>
+      <div class="row"><span>Xiên 2</span><span id="reco-consensus-xien" class="muted">—</span></div>
+      <div class="row"><span>Đề top 4</span><span id="reco-consensus-de" class="muted nums">—</span></div>
+      <div class="row"><span>Chạm đề</span><span id="reco-consensus-cham" class="muted">—</span></div>
+    </section>
+
+    <section class="card reco-meta">
+      <div class="row">
+        <span>Cao thủ chốt</span>
+        <strong id="reco-expert-count">—</strong>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Chốt đề theo cao thủ</h2>
+      <p class="muted de-by-expert-hint">Thảo luận + chốt đề — dàn chăn nuôi gom gọn bên dưới</p>
+      <div id="reco-de-by-expert" class="de-by-expert-list muted">Chưa tải…</div>
+    </section>
+
+    <section class="card">
+      <h2>Dàn đề cao thủ <span class="muted">(chi tiết)</span></h2>
+      <div id="reco-dan-board" class="dan-board muted">Chưa tải…</div>
+    </section>
+
+    <section class="card">
+      <h2>Gợi ý loại trừ (theo hiệu suất)</h2>
+      <div id="reco-dan-filter" class="dan-filter muted">Chưa tải…</div>
+    </section>
+
+    <section class="card">
+      <h2>Cao thủ đang chốt</h2>
+      <table class="reco-table">
+        <thead><tr><th>Cao thủ</th><th>Khu</th><th>Loại</th><th>Số</th><th>Hiệu suất</th><th>W</th></tr></thead>
+        <tbody id="reco-experts-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Top lô cao thủ</h2>
+      <table class="reco-table">
+        <thead><tr><th>#</th><th>Số</th><th>Trọng số</th><th>Cao thủ</th></tr></thead>
+        <tbody id="reco-loto-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Top lô đồng thuận</h2>
+      <table class="reco-table">
+        <thead><tr><th>#</th><th>Số</th><th>Phiếu</th><th>Cao thủ</th></tr></thead>
+        <tbody id="reco-consensus-loto-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="card actions">
+      <button id="btn-refresh-reco" type="button">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span class="btn-label">Tải đề xuất</span>
+      </button>
+    </section>
+    <p id="reco-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <div id="settings-panel" class="settings-panel hidden" hidden>
+    <section class="card" id="auth-card">
+      <h2>Đăng nhập forum</h2>
+      <div id="auth-form">
+        <label>Username <input id="auth-user" type="text" autocomplete="username" /></label>
+        <label>Password <input id="auth-pass" type="password" autocomplete="current-password" /></label>
+        <div class="btn-row">
+          <button id="btn-login" type="button">Đăng nhập lại</button>
+          <button id="btn-save-auth" type="button" class="secondary">Lưu</button>
+        </div>
+      </div>
+      <p id="auth-logged-hint" class="muted hidden">Đã đăng nhập forumketqua.net</p>
+    </section>
+
+    <section class="card">
+      <h2>Settings</h2>
+      <label>API URL <input id="api-url" type="url" /></label>
+      <label class="check"><input id="auto-sync" type="checkbox" /> Auto sync API</label>
+      <label>Poll active (phút) <input id="poll-active" type="number" min="1" max="60" /></label>
+    </section>
+  </div>
+
+  <p id="error" class="error hidden"></p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

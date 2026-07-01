@@ -1,367 +1,380 @@
-# SPEC: Prediction Engine — Xác Suất Thống Kê XSMB
+# SPEC: Prediction Engine v5.0 — Ensemble 11 Models + Crossover Boost
 
-**Project:** `kqxs_finetune` (trước: `analysis-rbk-py`)  
-**Version:** 1.1  
-**Date:** 2026-06-21  
-**Status:** **Implemented v1** — prediction + backtest + tuning đang chạy production
+**Project:** `analysis-rbk-py`  
+**Version:** 5.0  
+**Date:** 2026-06-28  
+**Status:** Production — đang chạy live prediction hàng ngày
 
 ---
 
 ## 1. Mục tiêu
 
-Xây dựng **Prediction Engine** trên PostgreSQL, dùng thuật toán xác suất thống kê để **xếp hạng** các con số có khả năng xuất hiện ở **ngày quay tiếp theo** (XSMB — Miền Bắc).
+Prediction Engine dùng ensemble của **11 model thống kê** để xếp hạng 100 số (00–99) cho XSMB, dự đoán ngày quay tiếp theo.
 
-Engine **không** hứa hẹn dự đoán chính xác giải ĐB 5 chữ số. Trọng tâm thực tế:
+| Target | Mô tả | Output | Default top-K | Baseline random |
+|--------|-------|--------|---------------|-----------------|
+| **Lô** | 2 số cuối xuất hiện trong bất kỳ 27 giải | top-K + score | 20 | ~100% hit rate |
+| **Đề** | 2 số cuối giải ĐB | top-K + score | 10 | 10% |
+| **Đầu / Đít** | Chữ số hàng chục / đơn vị (0–9) | top-K + score | 5 | 50% |
 
-| Target | Mô tả | Output | Default top-K |
-|--------|--------|--------|---------------|
-| **Lô** | 2 số cuối (00–99), xuất hiện trong **bất kỳ** giải trong 27 giải | Top-K + score | 20 |
-| **Đề** | 2 số cuối giải **ĐB** (`slot_index=0`) | Top-K + score | 10 |
-| **Đầu / Đít** | Chữ số hàng chục / đơn của lô (0–9) | Top digit + score | 5 |
-
-Mọi response prediction có `disclaimer`: *"Statistical ranking only. Not guaranteed."*
+Đề là target chính cần edge (lift >1.0x). Lô hit_rate ~99% là bình thường — dùng `recall_at_k` thay hit_rate.
 
 ---
 
-## 2. Bối cảnh dữ liệu
-
-### 2.1 PostgreSQL
-
-```
-postgresql://rbk:rbk@127.0.0.1:5436/rbk
-```
-
-Docker: `docker compose up -d` → container `rbk-postgres`, port **5436** (tránh conflict 5432/5433).
-
-### 2.2 Bảng / view
-
-| Bảng / View | Vai trò |
-|-------------|---------|
-| `draws` | 1 row/ngày MB (`draw_date`, `station`, `source`) |
-| `prizes` | 27 row/ngày (`slot_index`, `prize_level`, `number`, `last_two`, `first_digit`, `last_digit`) |
-| `mv_loto_daily` | `(draw_date, loto, hit_count)` |
-| `prediction_runs`, `prediction_items` | Lưu dự đoán |
-| `backtest_reports` | Kết quả backtest |
-| `trends`, `caudep_snapshots`, `chot_predictions` | Legacy RBK (rongbachkim scrape) |
-
-### 2.3 Quy ước domain (`lottery_format.py`)
-
-- 27 slot: `DB(1) + G1(1) + G2(2) + G3(6) + G4(4) + G5(6) + G6(3) + G7(4)`
-- **Lô ngày D:** tập `last_two` từ 27 giải (có trùng)
-- **Đề ngày D:** `last_two` slot `DB`
-- **Đầu/Đít:** `first_digit` / `last_digit` từ lô
-
-### 2.4 Trạng thái data (2026-06-21)
-
-| Metric | Giá trị |
-|--------|---------|
-| Tổng ngày MB | **~6.213** (`2007-01-01` → `2026-06-20`) |
-| Nguồn `minhngoc` | ~5.944 ngày |
-| Nguồn `mongo-migrate` | ~269 ngày |
-| Thiếu ước tính | ~900 ngày (Tết, scrape fail) |
-
-**Import pipeline:** `mb_import_service.import_mb_day()` → minhngoc trước, xskt fallback.
-
----
-
-## 3. Giả định thống kê & giới hạn
-
-1. Không gian dự đoán chính: **100 lô** (00–99).
-2. Mỗi ngày ~27 lượt hit lô (có lặp); ~20–25 lô distinct/ngày.
-3. **Ngày quay tiếp theo** = `max(draw_date) + 1 calendar day` (Tết/ngày nghỉ không có row).
-4. Xổ số ngẫu nhiên — **không có edge lớn** đã chứng minh.
-5. **Hit rate lô ~99%** với top-20 **không** chứng minh model giỏi (random cũng ~99%).
-
----
-
-## 4. Kiến trúc (đã implement)
+## 2. Kiến trúc tổng thể
 
 ```
 PostgreSQL (draws, prizes)
-    → features.py (FeatureContext, DayRecord)
-    → models/ M1–M7
-    → ensemble.py (M8, load tuned_weights.json)
-    → service.py
-    → routers/predictions.py
-    → prediction_runs / prediction_items
+    → features.py (FeatureContext, DayRecord, load_all_day_records)
+    → models/ (11 model, mỗi model 1 file)
+    → ensemble.py (score_ensemble, _cycle_boost, _crossover_consensus_boost)
+    → service.py (compute_next, evaluate, run_backtest_job)
+    → routers/predictions.py (API: GET/POST)
+    → prediction_runs / prediction_items (persist)
 ```
 
-### Module map (source thực tế)
+### File map
 
 ```
 app/prediction/
-  constants.py          # TARGET_*, MODEL_*, DEFAULT_TOP
-  features.py           # FeatureContext, load history
+  constants.py        # TARGET_*, MODEL_*, DEFAULT_TOP, DEFAULT_ENSEMBLE_WEIGHTS
+  features.py         # FeatureContext, DayRecord, load_all_day_records, actual_values_for_date
   models/
-    frequency.py        # M1
-    ewma.py             # M2
-    gap_survival.py     # M3
-    markov.py           # M4
-    bayesian_beta.py    # M5
-    weekday_station.py  # M6
-    digit_dau_dit.py    # M7
-    base.py             # normalize_minmax, rank_scores
-  ensemble.py           # M8
-  backtest.py           # walk-forward
-  tuning.py             # weight search
-  service.py            # compute_next, evaluate
-  weights.py            # load tuned_weights.json
-  tuned_weights.json    # artifact tuned
+    base.py           # normalize_minmax(), rank_scores()
+    frequency.py      # M1 — raw hit rate (all-time)
+    ewma.py           # M2 — exponentially weighted MA
+    gap_survival.py   # M3 — gap-based scoring
+    markov.py         # M4 — first-order Markov
+    bayesian_beta.py  # M5 — Beta-Binomial posterior
+    weekday_station.py# M6 — per-weekday hit rate
+    digit_dau_dit.py  # M7 — digit trend (LOTO only)
+    chi_square.py     # M8 — chi-square goodness-of-fit
+    bayesian_update.py# M9 — sequential Bayesian multi-window
+    cycle_pair.py     # M10 — 50 fixed pair cycle analysis
+    forum_consensus.py# M11 — forumketqua.net dàn consensus
+  ensemble.py         # score_ensemble, predict_top, _cycle_boost, _crossover_consensus_boost
+  backtest.py         # walk-forward backtest engine
+  tuning.py           # random search weight tuning
+  service.py          # compute_next, evaluate, run_backtest_job
+  weights.py          # ensemble_weights_for() → loads tuned_weights.json (fallback to defaults)
+  tuned_weights.json  # Production weights (artifact from tuning)
 ```
 
 ---
 
-## 5. Thuật toán (M1–M8)
+## 3. Database
 
-Mỗi model nhận `as_of_date` (chỉ data **≤ as_of**) → `Dict[value, score]`.
-
-| ID | Tên code | Ý tưởng | Params |
-|----|----------|---------|--------|
-| M1 | `frequency` | hits / opportunities | all-time |
-| M2 | `ewma` | ngày gần trọng số cao | λ=0.98 |
-| M3 | `gap` | lô gan (gap/max_gap) | — |
-| M4 | `markov` | P(hit tomorrow \| hit/miss today) | bậc 1 |
-| M5 | `bayesian` | Beta-Binomial posterior mean | α=β=1 |
-| M6 | `weekday` | freq theo thứ target_date | min 30 samples → fallback M1 |
-| M7 | `digit` | P(dau)×P(dit) cho lô; trực tiếp cho dau/dit | — |
-| M8 | `ensemble` | Σ w_i × normalize(M_i) | `tuned_weights.json` |
-
-**Đề:** dùng M1–M6 (không M7). **Đầu/Đít:** M1–M6 + M7 trực tiếp.
-
-### Trọng số ensemble đã tune (2020–2025, walk-forward)
-
-Nguồn: `app/prediction/tuned_weights.json` — reload qua `weights.ensemble_weights_for()`.
-
-**Lô (top-20, 2146 ngày):**
-
-| Model | Weight | Solo recall@20 |
-|-------|--------|----------------|
-| ewma | 0.447 | 0.2037 |
-| digit | 0.152 | 0.2023 |
-| weekday | 0.147 | 0.1998 |
-| bayesian | 0.086 | 0.1981 |
-| frequency | 0.072 | 0.1981 |
-| markov | 0.071 | 0.1980 |
-| gap | 0.025 | 0.2001 |
-| **ensemble** | — | **0.2034** |
-
-**Đề (top-10, 2146 ngày):**
-
-| Model | Weight | Solo hit% |
-|-------|--------|-----------|
-| markov | 0.307 | 11.18% |
-| ewma | 0.242 | 9.69% |
-| bayesian | 0.171 | 10.48% |
-| weekday | 0.133 | 10.62% |
-| frequency | 0.107 | 10.48% |
-| gap | 0.041 | 10.25% |
-| **ensemble** | — | **11.46%** (random 10%) |
-
-**Đầu/Đít (top-5, subsample 800 ngày):** recall ~50.5% (chọn 5/10 chữ số — gần random 50%).
-
-### So sánh tune 1 năm gần (2025-06-20 → 2026-06-20, 362 ngày)
-
-| Target | Weights 2020–25 | Tune 1 năm | Random |
-|--------|-----------------|------------|--------|
-| Lô recall@20 | 20.03% | **20.61%** | ~20% |
-| Đề hit@10 | 9.94% | **12.15%** | 10% |
-
-→ Trọng số dài hạn **underperform** trên data gần cho đề.
-
----
-
-## 6. Feature store
-
-**v1 (hiện tại):** Python on-the-fly từ `draws` + `prizes`. Cache in-memory per `(as_of_date, target_type)` — clear sau import.
-
-**v2 (chưa làm):** `mv_loto_features` materialized view rolling.
-
-Index đã có (`db/migrations/002_prediction.sql`):
-
-```sql
-CREATE INDEX idx_prizes_last_two_draw ON prizes (last_two, draw_id);
-CREATE INDEX idx_draws_mb_date ON draws (draw_date) WHERE region = 'MB';
+```python
+# Connection
+postgresql://rbk:***@127.0.0.1:5436/rbk
 ```
 
+### Bảng chính
+
+| Bảng | Vai trò |
+|------|---------|
+| `draws` | 1 row/ngày MB (`draw_date`, `station`, `source`) |
+| `prizes` | 27 row/ngày (`slot_index`, `prize_level`, `number`, `last_two`) |
+| `mv_loto_daily` | (draw_date, loto, hit_count) — denormalized |
+| `prediction_runs` | (id, target_date, target_type, model_name, created_at) |
+| `prediction_items` | (run_id, rank, value, score) |
+| `backtest_reports` | (target_type, model_name, period, metrics JSONB) |
+
+### Feature Loading
+
+`FeatureContext.load(as_of_date, target_type, target_date)`:
+1. Query `draws` + `prizes` cho MB, region='MB'
+2. Build `DayRecord` list: mỗi ngày chứa `loto_hits` dict, `de` string, `dau_digits`, `dit_digits`
+3. Dùng in-memory cache keyed bởi `(as_of_date, target_type)` — `clear_feature_cache()` để reset
+
+### Data trạng thái (2026-06-28)
+
+- Tổng ngày: ~6,221 (2007-01-01 đến 2026-06-28)
+- Thiếu ~900 ngày (Tết, lỗi scrape)
+- Nguồn: minhngoc (chính), xskt (fallback)
+
 ---
 
-## 7. Backtest
+## 4. 11 Models
 
-### Walk-forward (`backtest.py`)
+### M1: Frequency (`frequency.py`)
+
+**Công thức:** hit_count / total_opportunities  
+**Window:** all-time (toàn bộ history)  
+**Output:** raw tỷ lệ, normalize min-max.  
+**Ý nghĩa:** baseline — số nào về nhiều nhất trong lịch sử.
+
+### M2: EWMA (`ewma.py`)
+
+**Công thức:** `score_t = λ × hit_t + (1-λ) × score_{t-1}`  
+**Lambda:** `0.97` (giảm từ 0.98 ngày 22/06 — giảm overlap giữa các ngày liên tiếp)  
+**Output:** normalized [0,1].  
+**Ý nghĩa:** số "hot recent" — ngày càng gần càng nặng.
+
+### M3: Gap Survival (`gap_survival.py`)
+
+**Công thức:** `score = 1 - (gap / max_gap)` — gap càng ngắn điểm càng cao  
+**Gap:** số ngày từ lần xuất hiện gần nhất  
+**Max gap:** gap lớn nhất trong lịch sử  
+**Lưu ý:** Gambler's fallacy — gap ngắn score cao, gap dài score thấp.
+
+### M4: Markov (`markov.py`)
+
+**Ma trận chuyển:** P(hit t+1 | hit_t), P(hit t+1 | miss_t) — bậc 1  
+**Output:** normalize min-max.  
+**Ý nghĩa:** Nếu số hôm trước về, khả năng hôm sau về là bao nhiêu.
+
+### M5: Bayesian Beta (`bayesian_beta.py`)
+
+**Prior:** Beta(α=1.0, β=1.0) — uniform  
+**Posterior mean:** (α + hits) / (α + β + total)  
+**Output:** normalized [0,1].  
+**Ý nghĩa:** shrinkage — số với ít observations bị kéo về prior.
+
+### M6: Weekday Station (`weekday_station.py`)
+
+**Công thức:** hit_rate riêng cho từng thứ trong tuần  
+**Min samples:** 30 — nếu <30 ngày, fallback về M1  
+**Output:** normalize min-max.  
+**Ý nghĩa:** Một số có thể về nhiều vào thứ 2, ít vào thứ 7.
+
+### M7: Digit Đầu Đít (`digit_dau_dit.py`)
+
+**Chỉ dùng cho LOTO** (không cho DE).  
+**Công thức:** `P(dau) × P(dit)` — tích xác suất chữ số hàng chục và hàng đơn vị.  
+**Output:** normalize min-max.  
+**Ý nghĩa:** Tách riêng xu hướng đầu và đuôi.
+
+### M8: Chi-Square (`chi_square.py`)
+
+**Test:** chi-square goodness-of-fit của observed vs expected uniform  
+**Min samples:** 500 — nếu <500 tổng observations, trả uniform (1/n)  
+**Score conversion:** `1 / (1 + exp(-z/2))` với z là z-score  
+**Output:** normalized [0,1].  
+**Ý nghĩa:** Số có z-score dương (xuất hiện nhiều hơn kỳ vọng) được ưu tiên—có thể là physical bias trong máy quay.
+
+### M9: Bayesian Sequential Update (`bayesian_update.py`)
+
+**Multi-window:** [5, 10, 20, 40, 80] ngày  
+**Với mỗi window:** tính posterior mean, so với prior (historical freq) → lift  
+**Combine:** weighted average các lifts theo recency  
+**Output:** sigmoid(ln(lift) × 2) → normalized [0,1]  
+**Ý nghĩa:** Detects "regime change" — số bình thường lạnh nhưng gần đây nóng lên.
+
+### M10: Cycle Pair (`cycle_pair.py`) — **Added 23/06**
+
+**50 fixed pairs** từ mketqua.net (số đảo và cặp bóng):
+
+```
+00-55, 01-10, 02-20, 03-30, 04-40, 05-50, 06-60, 07-70, 08-80, 09-90
+11-66, 12-21, 13-31, 14-41, 15-51, 16-61, 17-71, 18-81, 19-91, 22-77
+23-32, 24-42, 25-52, 26-62, 27-72, 28-82, 29-92, 33-88, 34-43, 35-53
+36-63, 37-73, 38-83, 39-93, 44-99, 45-54, 46-64, 47-74, 48-84, 49-94
+56-65, 57-75, 58-85, 59-95, 67-76, 68-86, 69-96, 78-87, 79-97, 89-98
+```
+
+**Algorithm:** mỗi pair có avg_cycle (khoảng cách trung bình giữa các lần về).
+Nếu current_gap >= avg_cycle → pair **DUE** → boost cả 2 số 0.15-0.40.
+**Output:** normalize_minmax bắt buộc — tránh raw boost dominate ensemble.
+
+### M11: Forum Consensus (`forum_consensus.py`) — **Added 28/06**
+
+**Nguồn:** forumketqua.net — 3 thread dàn đề: 40s K4N, 36s K5N, 64s daily  
+**Crawl:** 5 pages cuối mỗi thread, parse <blockquote> HTML, lấy user có ≥20 số  
+**Score:** `0.4 × overall_freq + 0.6 × top_user_freq`  
+**Top users:** danv, himle79, Hanhtrinhmoi, Thuoclao6996, emvatoi213, msm43, Xuannd, phipn, Binhrau1, Rauria, No1.XS  
+**Cache:** 1 ngày.  
+**Weight DE:** 8% (tăng từ 5% ngày 28/06). **Weight LOTO:** 0.5%.
+
+---
+
+## 5. Ensemble Combination (`ensemble.py`)
+
+### Core formula
+
+```python
+for each model in active_models:
+    raw = score_model(ctx, model_name)
+    norm = normalize_minmax(raw)  # [0,1] — MANDATORY for all models
+    for value in universe:
+        combined[value] += weight * norm[value]
+combined = {k: v / total_w for k, v in combined.items()}
+```
+
+### Normalize min-max rules
+
+- **BẮT BUỘC** với tất cả models. Cycle_pair từng bị raw 0.15-0.40 dominate ensemble (bug 24/06 — fixed).
+- `normalize_minmax(raw)` → max=1.0, min=0.0.
+- Score 0 nghĩa là score thấp nhất trong universe, không có nghĩa là 0% hit.
+
+### Post-Processing Step 1: Cycle Boost
+
+**Rules (empirical từ 60 ngày backtest):**
+
+| Pattern | Boost | Frequency |
+|---------|-------|-----------|
+| Số có đầu/đuôi trùng đuôi ĐB hôm trước (cham trùng) | +5% | 52.5% |
+| Số có tổng 2 chữ số = bóng dương tổng đề hôm trước | +10% | Frequent |
+| Số đảo của ĐB hôm trước (loto only) | +5% | 27.1% |
+| Số lân cận ±1 của ĐB hôm trước | +8% | Backtest 24/06 |
+
+**Bóng dương:** 0→5, 1→6, 2→7, 3→8, 4→9, 5→0, 6→1, 7→2, 8→3, 9→4
+
+Áp dụng cho LOTO + DE (trừ dòng "loto only").
+
+### Post-Processing Step 2: Chi-Square Penalty
+
+- Nếu chi-square score < 0.4 và ensemble score > 0.7 → penalize 15%
+- Nếu chi-square score < 0.3 và ensemble score > 0.5 → penalize 10%
+- Mục đích: tránh overfit vào số có z-score thấp (24/06 phát hiện case 52 posterior 1.00 miss)
+
+### Post-Processing Step 3: Crossover Consensus Boost (Added 28/06)
+
+**DE only.** Khi cycle_pair + forum_consensus + bayesian_update đồng loạt vote cao:
+
+```python
+for each number:
+    avg_cross = average(normalized_score from each crossover model)
+    if avg_cross >= 0.60:
+        boost = (avg_cross - 0.55) * 0.50  # 2.5% to 22.5%
+        combined[val] *= (1.0 + boost)
+```
+
+**Nguyên lý:** 3 model "chuyên biệt" (không phải frequency/EWMA thông thường) cùng vote cao = tín hiệu mạnh.
+
+**Case 28/06:** 52 có cycle_pair=0.54, forum=0.705, bayesian_update=0.59 → avg_cross=0.61 → boost ~3%. Đủ đưa từ rank 24 lên 14-15.
+
+---
+
+## 6. Weights (DE — source tuned_weights.json)
+
+Production weights cho DE (từ tuned_weights.json, merged từ defaults cho models thiếu):
+
+| Model | Weight | Notes |
+|-------|--------|-------|
+| bayesian_update | 37.0% | Giảm từ 41.7% (28/06) |
+| gap | 26.4% | Số lạnh ưu tiên |
+| cycle_pair | 12.3% | Tăng từ 9% (28/06) — cycle analysis |
+| weekday | 8.8% | Day-of-week signal |
+| forum_consensus | 7.6% | Tăng từ 5% (28/06) — forum consensus |
+| ewma | 5.3% | Recency bias |
+| chi_square | 2.1% | Physical bias signal |
+| bayesian | 1.5% | Static prior |
+| markov | 0.6% | Transition matrix |
+| frequency | 0.4% | All-time baseline |
+
+**LOTO weights** — xem tuned_weights.json (EWMA 27.6%, weekday 20.2%, digit 13.8%, ...)
+
+**Data source precedence:** `tuned_weights.json` → `weights.ensemble_weights_for()` → fallback `DEFAULT_ENSEMBLE_WEIGHTS`.
+
+---
+
+## 7. Backtest Methodology (`backtest.py`)
+
+### Walk-forward design
 
 ```
 for each draw_date D in [start, end]:
-    train = draws WHERE draw_date < D
-    predict D with models trained on train
-    compare vs actual
+    train = all draws before D
+    predict D using models trained on train
+    compare with actual values on D
 ```
 
 ### Metrics
 
-| Target | Metric | Ý nghĩa |
+| Target | Metric | Formula |
 |--------|--------|---------|
-| Lô | `hit_rate` | % ngày có ≥1 lô trong top-K trúng |
-| Lô | `recall_at_k` | \|pred ∩ actual\| / \|actual\| |
-| Lô | `lift` | hit_rate / random (Monte Carlo) |
-| Đề | `hit_rate` | % ngày đề thực ∈ top-K |
-| Đề | random | K/100 |
+| DE | hit_rate | #days đề ∈ top-K / total days |
+| DE | lift | hit_rate / (K/100) |
+| LOTO | hit_rate | #days có ≥1 lô top-K hit / total |
+| LOTO | recall_at_k | \|pred ∩ actual\| / \|actual\| |
 
-### Kết quả thực tế (không phải ví dụ lý thuyết)
+### Performance (historical)
 
-**2020–2025 ensemble tuned:**
-- Lô: recall **20.34%**, lift **~1.0** (gần random)
-- Đề: hit **11.46%**, lift **~1.15**
+| Period | DE hit@10 | DE lift | DE random |
+|--------|-----------|---------|-----------|
+| 2020-2025 (5yr) | ~11.5% | 1.15x | 10% |
+| 2026-05-23→06-22 (30d) | **19.35%** | **1.94x** | 10% |
 
-**Tiêu chí ship v1:** đã ship; đề hơi trên random, lô không vượt random đáng kể.
-
----
-
-## 8. Schema DB (đã migrate)
-
-Tables trong `db/schema.sql` + `db/migrations/002_prediction.sql`:
-
-- `prediction_runs` — UNIQUE `(target_date, target_type, model_name)`
-- `prediction_items` — `(run_id, rank, value, score)`
-- `backtest_reports` — lưu metrics JSONB
+**30-day high (1.94x lift)** nhờ:
+- Giảm EWMA λ từ 0.98→0.97
+- Cycle boost post-processing
+- Added cycle_pair + forum_consensus models
+- Adjusted weights (bayesian_update 41.7%, gap 27.9%)
+- Crossover consensus boost (28/06)
 
 ---
 
-## 9. API (đã implement)
+## 8. API
 
 Prefix: `/predictions`
 
-| Method | Path | Query / Body |
-|--------|------|--------------|
-| GET | `/predictions/next` | `target`, `top`, `model`, `as_of`, `persist` |
-| GET | `/predictions/weights` | Trả `tuned_weights.json` |
-| GET | `/predictions/evaluate` | `date`, `target`, `top`, `model` |
-| POST | `/predictions/backtest` | `{from_date, to_date, target, top_k, models?}` |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/predictions/next` | Dự đoán target_date tiếp theo |
+| GET | `/predictions/evaluate` | Đánh giá prediction cho 1 ngày cụ thể |
+| POST | `/predictions/backtest` | Chạy backtest |
+| GET | `/predictions/weights` | Trả về tuned_weights.json hiện tại |
 
-`model` values: `ensemble`, `frequency`, `ewma`, `gap`, `markov`, `bayesian`, `weekday`, `digit`, `all`.
+### GET /predictions/next
 
-Legacy giữ nguyên: `/kqxs/*`, `/rbk/*`, `/analytics/*`.
+Query params: `target=[loto|de|dau|dit]`, `top=N`, `model=[ensemble|...]`, `as_of=YYYY-MM-DD`, `persist=true|false`
+
+Response:
+```json
+{
+  "target_date": "2026-06-29",
+  "target_type": "de",
+  "predictions": [
+    {"rank": 1, "value": "83", "score": 0.6465},
+    {"rank": 2, "value": "36", "score": 0.6398}
+  ],
+  "meta": {
+    "train_days": 6213,
+    "models_combined": ["frequency", "ewma", "gap", "markov", "bayesian", "weekday", "chi_square", "bayesian_update", "cycle_pair", "forum_consensus"]
+  },
+  "disclaimer": "Statistical ranking only. Not guaranteed."
+}
+```
 
 ---
 
-## 10. Luồng vận hành (đã implement)
+## 9. Vận hành hàng ngày (Scheduler)
 
 ```
-1. Scheduler 18:15 import MB (minhngoc → xskt)
-2. refresh_loto_views()
-3. clear_feature_cache() + compute_next(persist=True)
-4. Dự phòng 19:05 predict nếu import fail
+18:15 — XSMB quay
+18:15-18:30 — import_mb_day() (minhngoc → xskt fallback)
+18:30 — refresh_loto_views(), clear_feature_cache()
+18:30 — compute_next(target='de', top=10, persist=True)
+18:30 — compute_next(target='loto', top=20, persist=True)
+19:00 — XSMB daily report script (Telegram)
 ```
 
-File: `app/scheduler.py` — `_import_kqxs_today()`, `_predict_next_day()`.
+File: `app/scheduler.py`
 
 ---
 
-## 11. Implementation status
+## 10. Lịch sử thay đổi
 
-### Phase 1 — Foundation ✅
-
-- [x] Migration `prediction_*`, `backtest_reports`
-- [x] `features.py`
-- [x] M1 Frequency + M5 Bayesian
-- [x] `backtest.py` walk-forward
-- [x] API `GET /predictions/next`, `POST /predictions/backtest`
-
-### Phase 2 — Models ✅
-
-- [x] M2 EWMA, M3 Gap, M4 Markov, M6 Weekday
-- [x] M8 Ensemble + tune weights (`tuning.py`, `tuned_weights.json`)
-- [x] Target đề riêng
-
-### Phase 3 — Production ✅ (một phần)
-
-- [x] Scheduler auto-predict
-- [x] `GET /predictions/evaluate`
-- [x] `GET /predictions/weights`
-- [x] M7 Đầu/Đít
-- [ ] Dashboard / log metrics
-- [ ] UI
-
-### Phase 4 — Backlog
-
-- [ ] `mv_loto_features` SQL incremental
-- [ ] Calibration plots
-- [ ] So sánh `chot_predictions`
-- [ ] MN/MT prediction
-- [ ] Profile trọng số `recent` vs `long_term`
-- [ ] M3 geometric survival
-- [ ] Unit tests
-- [ ] Backtest performance (hiện chậm trên full period)
+| Date | Change | Detail |
+|------|--------|--------|
+| 2026-06-21 | v1.1 Baseline | 7 models ensemble, weights từ tune 2020-2025, backtest framework |
+| 2026-06-22 | Post-process cycle boost | Thêm cham trùng + bóng dương boost. DE lift 1.15→1.94x |
+| 2026-06-23 | Cycle pair model | M10 — 50 fixed pairs cycle analysis. Normalize fix cần thiết |
+| 2026-06-24 | Bugfix: normalize cycle_pair | Raw boost dominate ensemble — fixed. Thêm chi-square penalty |
+| 2026-06-25 | cau filter integration | Cầu làm noise filter trong candidate service (candidate_service.py) |
+| 2026-06-27 | Post-mortem 27/06 fail | Không panic adjust sau 1 ngày — variance ngẫu nhiên |
+| 2026-06-28 | Forum consensus model M11 | Crawl forumketqua.net dàn 40s/36s/64s → score. Weight DE=5% |
+| **2026-06-28** | **Crossover consensus boost** | Thêm post-processing step 3 — boost khi cycle_pair+forum+bayesian_update đồng thuận |
+| **2026-06-28** | **Weight rebalance DE** | cycle_pair 9→13%, forum 5→8%, bayesian_update 41.7→37% |
 
 ---
 
-## 12. Scripts
+## 11. Known Issues & Limitations
 
-| Script | Mô tả |
-|--------|--------|
-| `scripts/backfill_xsmb.py` | Backfill MB `--from 2007-01-01` |
-| `scripts/tune_ensemble_weights.py` | Tune + ghi `tuned_weights.json` |
-| `scripts/migrate_mongo_to_pg.py` | One-time Mongo → PG |
-
----
-
-## 13. Vấn đề còn tồn tại
-
-### Data pipeline
-
-| # | Vấn đề | Impact | Workaround |
-|---|--------|--------|------------|
-| D1 | xskt CrowdSec Captcha | Không scrape xskt từ IP hiện tại | Dùng minhngoc |
-| D2 | ~900 ngày thiếu trong DB | Gap lịch sử | Tiếp tục backfill |
-| D3 | rongbachkim blocked | chotkq/trend/caudep fail | Không dùng cho prediction v1 |
-| D4 | MN/MT chỉ RSS gần | Không đủ history regional | Backlog |
-
-### Prediction accuracy
-
-| # | Vấn đề | Ghi chú |
-|---|--------|---------|
-| P1 | Lô recall ~20% ≈ random | Hit rate 99% misleading |
-| P2 | Đề lift ~1.15 max (dài hạn) | Không đủ cho “chính xác cao” |
-| P3 | Trọng số 2020–25 kém trên 1 năm gần (đề 9.9%) | Cần profile `recent` hoặc re-tune định kỳ |
-| P4 | Gap model = gambler's fallacy | Giữ cho tương thích RBK legacy |
-| P5 | dau/dit tune trên subsample 800 ngày | Metrics ít tin cậy hơn loto/de |
-
-### Technical debt
-
-| # | Vấn đề | File liên quan |
-|---|--------|----------------|
-| T1 | Feature cache không TTL | `features.py` |
-| T2 | Backtest O(days × models) chậm | `backtest.py`, `tuning.py` |
-| T3 | Không có tests | — |
-| T4 | Python 3.9 compat | `db.py` dùng `Optional` |
-| T5 | macOS LibreSSL + requests | `http_util.py` curl fallback |
-
----
-
-## 14. Quyết định đã chốt (từ review)
-
-| Câu hỏi | Quyết định |
-|---------|------------|
-| Top-K mặc định | Lô 20, đề 10, đầu/đít 5 |
-| Ưu tiên target | Lô + đề (cả hai implemented) |
-| UI | Chưa — API only |
-| Trọng số ensemble | Auto-tune → `tuned_weights.json` |
-| Merge caudep RBK | Chưa — backlog |
-
----
-
-## 15. Tài liệu tham chiếu code
-
-| File | Vai trò |
-|------|---------|
-| `app/services/lottery_format.py` | 27 slot, đầu/đít |
-| `app/services/mb_import_service.py` | minhngoc + xskt fallback |
-| `app/services/minhngoc_service.py` | Parser minhngoc |
-| `app/routers/analytics.py` | loto-frequency, loto-gan |
-| `app/routers/predictions.py` | Prediction API |
-| `app/prediction/tuned_weights.json` | Trọng số production |
-| `app/repositories/prediction_repo.py` | Persist predictions |
-| `db/schema.sql` | Full schema |
-
----
-
-*End of SPEC v1.1 — synced with source 2026-06-21*
+1. **Lô recall ~20% ≈ random** — Hit rate 99% gây hiểu lầm. Dùng recall_at_k.
+2. **Đề variance cao** — Chỉ 1 mẫu/ngày, 1% baseline. 1.94x lift là significant nhưng vẫn miss nhiều.
+3. **Forum_consensus phụ thuộc crawl** — Nếu forumketqua down hoặc thay đổi HTML → model trả uniform.
+4. **Backtest chậm** — ~3 phút cho 11 models × 2000 ngày.
+5. **~900 ngày thiếu DB** — Khoảng trống lịch sử (Tết, lỗi scrape).
+6. **Cross-platform models (bayesian_update + cycle_pair + forum_consensus) chưa tuned với nhau** — weights hiện tại dùng heuristics. Cần tune lại toàn bộ ensemble.

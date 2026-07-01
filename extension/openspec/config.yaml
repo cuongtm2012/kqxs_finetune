@@ -1,0 +1,4 @@
+# OpenSpec config — Forumketqua Chrome Collector
+project: rbk-forum-collector
+version: 1
+default_timezone: Asia/Ho_Chi_Minh

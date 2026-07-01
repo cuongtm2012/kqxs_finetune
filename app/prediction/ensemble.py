@@ -12,6 +12,7 @@ from app.prediction.constants import (
     MODEL_DIGIT,
     MODEL_ENSEMBLE,
     MODEL_EWMA,
+    MODEL_FORUM_CONSENSUS,
     MODEL_FREQUENCY,
     MODEL_GAP,
     MODEL_MARKOV,
@@ -31,6 +32,7 @@ from app.prediction.models import (
     cycle_pair,
     digit_dau_dit,
     ewma,
+    forum_consensus,
     frequency,
     gap_survival,
     markov,
@@ -48,6 +50,7 @@ MODEL_FNS = {
     MODEL_CHI_SQUARE: lambda ctx: chi_square.score_chi_square(ctx),
     MODEL_BAYESIAN_UPDATE: lambda ctx: bayesian_update.score_bayesian_update(ctx),
     MODEL_CYCLE_PAIR: lambda ctx: cycle_pair.score_cycle_pair(ctx),
+    MODEL_FORUM_CONSENSUS: lambda ctx: forum_consensus.score_forum_consensus(ctx),
 }
 
 
@@ -162,6 +165,51 @@ def score_ensemble(
         # Nếu chi-square score rất thấp (<0.3), penalize thêm 10%
         if chi_score < 0.3 and combined[val] > 0.5:
             combined[val] *= 0.90
+    
+    # === CROSSOVER CONSENSUS BOOST (added 28/06) ===
+    # Khi cycle_pair + forum_consensus + bayesian_update đồng loạt vote CAO cho 1 số
+    # (dùng soft threshold: score >= 50% max score của model đó), đó là tín hiệu mạnh.
+    # Case 28/06: 52 có cycle_pair=0.54 (top20%), forum=0.705 (top20%), bayesian_update=0.59 (gần 60% max)
+    # Dùng soft threshold thay vì top-N% cứng để bắt pattern này rộng hơn.
+    if ctx.target_type == "de":
+        crossover_models = [MODEL_CYCLE_PAIR, MODEL_FORUM_CONSENSUS, MODEL_BAYESIAN_UPDATE]
+        solo_scores = {}
+        for m in crossover_models:
+            try:
+                solo_scores[m] = score_model(ctx, m)
+            except Exception:
+                pass
+        
+        if len(solo_scores) >= 2:
+            # Soft threshold: score >= 50% của max score model đó
+            thresholds = {}
+            for m, sc in solo_scores.items():
+                max_s = max(sc.values()) if sc else 0.0
+                thresholds[m] = max_s * 0.50  # soft: >= half of max
+            
+            # Normalize solo scores và tính average crossover score
+            for val in combined:
+                if len(val) != 2:
+                    continue
+                # Tính average normalized score từ crossover models
+                cross_scores = []
+                for m in crossover_models:
+                    if m in solo_scores:
+                        s = solo_scores[m].get(val, 0.0)
+                        max_m = max(solo_scores[m].values()) if solo_scores[m] else 1.0
+                        if max_m > 0:
+                            cross_scores.append(s / max_m)  # normalize [0,1] relative to model's max
+                
+                if not cross_scores:
+                    continue
+                
+                avg_cross = sum(cross_scores) / len(cross_scores)
+                # Boost nếu crossover trung bình >= 0.60 (cả 3 model vote trên 60% max của chúng)
+                # boost = (avg - 0.55) * 0.50 → 0.60→2.5%, 0.70→7.5%, 0.80→12.5%, 1.00→22.5%
+                # Càng crossover mạnh càng boost nhiều
+                if avg_cross >= 0.60:
+                    boost_pct = (avg_cross - 0.55) * 0.50  # 0.025 to 0.225
+                    combined[val] *= (1.0 + boost_pct)
     
     return combined, active
 

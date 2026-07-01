@@ -9,7 +9,7 @@
 Thay thế Prediction Engine (ensemble lift ~1.02x, gần random) bằng **Stats Engine** — cung cấp:
 1. Công cụ thống kê mô tả theo 7 module độc lập
 2. **Conditional Frequency** — thống kê loto ĐB hôm sau dựa trên loto ĐB hôm trước
-3. **RBK Cầu Crawler** — crawl dữ liệu soi cầu từ rongbachkim.net tự động
+3. **Cầu Crawler** — crawl dữ liệu soi cầu từ rongbachkim.net tự động
 4. Candidate pool multi-filter kèm lý do
 
 **Triết lý:** XSMB gần như perfectly random. Engine cung cấp data + lý do, không fake dự đoán.
@@ -110,7 +110,7 @@ ORDER BY COUNT(*) DESC;
 
 ---
 
-### Module 8 (NEW): RBK Cầu Crawler
+### Module 8 (NEW): Cầu Crawler
 
 #### Mô tả
 
@@ -198,7 +198,7 @@ Thêm 2 filters mới:
 | Filter | Mô tả | Nguồn | Score |
 |--------|-------|-------|-------|
 | `conditional-frequency` | Loto hay về khi ĐB hôm trước = X | Module 7 (DB) | `(lift−1)×2` cap 0.5 |
-| `rbk-cau` | Loto có nhiều cầu RBK | Module 8 (crawl) | `weight×0.5` cap 0.5 |
+| `rbk-cau` | Loto có nhiều cầu | Module 8 (crawl) | `weight×0.5` cap 0.5 |
 
 ---
 
@@ -208,7 +208,7 @@ Thêm 2 filters mới:
 - [x] Query + `get_conditional_frequency()`
 - [x] `GET /stats/conditional-frequency`
 
-### Phase 2 — Module 8: RBK Crawler ✅
+### Phase 2 — Module 8: Cầu Crawler ✅
 - [x] `services/rbk_crawler.py` — crawl + parse + cache
 - [x] `GET /stats/rbk-cau`
 - [x] `tests/test_rbk_crawler.py`
@@ -218,7 +218,7 @@ Thêm 2 filters mới:
 
 ### Phase 4 — Module 1-6 ✅ (từ v2/v4)
 
-### Phase 5 — RBK backtest + persist ✅
+### Phase 5 — backtest + persist ✅
 - [x] `POST /stats/rbk-cau/backtest`
 - [x] `candidate_snapshots` + persist scheduler
 - [x] `target_weekday` SPEC convention (0=CN) ở API layer
@@ -231,4 +231,4 @@ Thêm 2 filters mới:
 |---------|------|---------|
 | v1.0 | 2026-06-20 | Initial prediction engine spec |
 | v2.0 | 2026-06-21 | Convert to stats + candidate pool |
-| v3.0 | 2026-06-21 | Thêm Module 7 (Conditional Frequency), Module 8 (RBK Crawler) |
+| v3.0 | 2026-06-21 | Thêm Module 7 (Conditional Frequency), Module 8 (Cầu Crawler) |

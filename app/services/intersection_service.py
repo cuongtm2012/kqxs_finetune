@@ -12,7 +12,7 @@ from app.services.stats_service import get_conditional_frequency, get_day_contex
 logger = logging.getLogger(__name__)
 
 INTERSECTION_DISCLAIMER = (
-    "Intersection Engine: kết hợp Conditional Frequency + RBK cầu lặp. "
+    "Intersection Engine: kết hợp Conditional Frequency + cầu lặp. "
     "Chỉ pick khi tín hiệu đủ mạnh; có thể skip ngày yếu. Không phải dự đoán."
 )
 
@@ -20,9 +20,9 @@ IntersectionStrategy = Literal["intersection", "cf_only", "rbk_only"]
 IntersectionFallback = Literal["cf_only", "rbk_only", "none"]
 
 DEFAULT_MIN_CF_LIFT = 3.0
-DEFAULT_MIN_RBK_CAU = 4
+DEFAULT_MIN_CAU = 4
 DEFAULT_TOP = 20
-DEFAULT_RBK_LIMIT = 5
+DEFAULT_CAU_LIMIT = 5
 DEFAULT_MIN_OCC = 1
 CF_MIN_WEEKDAY_SAMPLES = 10
 
@@ -81,7 +81,7 @@ def _get_cf_candidates(
 def _get_rbk_candidates(
     as_of_date: str,
     min_rbk_cau: int,
-    rbk_limit: int = DEFAULT_RBK_LIMIT,
+    rbk_limit: int = DEFAULT_CAU_LIMIT,
 ) -> tuple[list[str], dict[str, int], int]:
     result = get_rbk_cau(date_str=as_of_date, limit=rbk_limit, min_cau=min_rbk_cau)
     counts = dict(result.get("number_counts") or {})
@@ -158,10 +158,10 @@ def build_intersection(
     target_date: Optional[str] = None,
     top: int = DEFAULT_TOP,
     min_cf_lift: float = DEFAULT_MIN_CF_LIFT,
-    min_rbk_cau: int = DEFAULT_MIN_RBK_CAU,
+    min_rbk_cau: int = DEFAULT_MIN_CAU,
     strategy: IntersectionStrategy = "intersection",
     fallback: IntersectionFallback = "none",
-    rbk_limit: int = DEFAULT_RBK_LIMIT,
+    rbk_limit: int = DEFAULT_CAU_LIMIT,
     min_occ: int = DEFAULT_MIN_OCC,
 ) -> dict:
     start_ms = time.perf_counter()
@@ -242,10 +242,10 @@ def evaluate_intersection(
     target_date: str,
     top: int = DEFAULT_TOP,
     min_cf_lift: float = DEFAULT_MIN_CF_LIFT,
-    min_rbk_cau: int = DEFAULT_MIN_RBK_CAU,
+    min_rbk_cau: int = DEFAULT_MIN_CAU,
     strategy: IntersectionStrategy = "intersection",
     fallback: IntersectionFallback = "none",
-    rbk_limit: int = DEFAULT_RBK_LIMIT,
+    rbk_limit: int = DEFAULT_CAU_LIMIT,
 ) -> dict:
     start_ms = time.perf_counter()
     prediction = build_intersection(
@@ -356,7 +356,7 @@ def run_intersection_backtest(
     min_rbk_cau: Optional[int] = None,
     strategy: IntersectionStrategy = "intersection",
     fallback: IntersectionFallback = "none",
-    rbk_limit: int = DEFAULT_RBK_LIMIT,
+    rbk_limit: int = DEFAULT_CAU_LIMIT,
     compare_strategies: bool = True,
 ) -> dict:
     start_ms = time.perf_counter()
@@ -394,7 +394,7 @@ def run_intersection_backtest(
                 _backtest_one_config(
                     target_dates,
                     min_cf_lift=DEFAULT_MIN_CF_LIFT,
-                    min_rbk_cau=DEFAULT_MIN_RBK_CAU,
+                    min_rbk_cau=DEFAULT_MIN_CAU,
                     strategy=label_strategy,
                     fallback="none",
                     top=top,

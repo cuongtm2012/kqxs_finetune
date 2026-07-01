@@ -37,7 +37,7 @@ Bổ sung **lô gan** và **tần suất hay về** vào candidate pool lô; tin
 | `calendar` | lift ≥ 1.05 | `(lift−1)×3`, cap 0.5 |
 | `lo-roi` | lift > 1.0 | `(lift−1)×1`, cap 1.0 |
 | `conditional-frequency` | lift ≥ 1.05 | `(lift−1)×2`, cap 0.5 |
-| `rbk-cau` | có cầu RBK | `weight×0.5`, cap 0.5 |
+| `rbk-cau` | có cầu lặp | `weight×0.5`, cap 0.5 |
 
 ### Phân biệt gan / tần suất
 

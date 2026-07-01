@@ -9,8 +9,8 @@
 Thay thế Prediction Engine (ensemble lift ~1.02x, gần random) bằng **Stats Engine** — cung cấp:
 1. Công cụ thống kê mô tả theo 8 module độc lập
 2. **Conditional Frequency** — thống kê loto ĐB hôm sau dựa trên loto ĐB hôm trước
-3. **RBK Cầu Crawler** — crawl dữ liệu soi cầu từ rongbachkim.net
-4. **Intersection Engine** — kết hợp conditional frequency + RBK cầu lặp cho edge tối đa
+3. **Cầu Crawler** — crawl dữ liệu soi cầu từ rongbachkim.net
+4. **Intersection Engine** — kết hợp conditional frequency + cầu lặp cho edge tối đa
 5. Candidate pool multi-filter kèm lý do
 
 **Triết lý:** XSMB gần như perfectly random. Engine cung cấp data + lý do, không fake dự đoán.
@@ -46,7 +46,7 @@ Thống kê: khi loto ĐB hôm nay là X → loto ĐB hôm sau thường ra con 
 - Trả về: tần suất, chạm (đầu/đít/tổng), lịch sử chi tiết
 - Có filter theo thứ
 
-### Module 8: RBK Cầu Crawler (giữ nguyên từ v3)
+### Module 8: Cầu Crawler (giữ nguyên từ v3)
 
 Crawl rongbachkim.net, parse thống kê cầu lặp.
 - `GET /stats/rbk-cau?limit=5&min_cau=3`
@@ -65,13 +65,13 @@ Multi-layer scoring với 7 filters chỉ đạt **lift 1.05x** (recall 20.9% vs
 Thay vì weighted score của nhiều filter, dùng **intersection của 2 tín hiệu mạnh nhất**:
 
 1. **Conditional Frequency** — đo lift của loto ĐB hôm sau khi biết loto ĐB hôm trước
-2. **RBK Cầu Lặp** — cặp loto có nhiều cầu nhất trên rongbachkim
+2. **Cầu Lặp** — cặp loto có nhiều cầu nhất trên rongbachkim
 
 Chiến lược 3 lớp:
 
 ```
 Layer 1 — Intersection (lift ~2x)
-  IF có số trong cả CF (lift >= min_cf_lift) VÀ RBK (cầu lặp >= min_rbk_cau)
+  IF có số trong cả CF (lift >= min_cf_lift) VÀ cầu lặp (>= min_rbk_cau)
   THEN pick intersection
 
 Layer 2 — Conditional Frequency alone (lift ~1.2x)
@@ -85,7 +85,7 @@ Layer 3 — Không pick
 
 ### 4.3 Backtest Results (30 ngày)
 
-#### Intersection (CF + RBK Cầu Lặp):
+#### Intersection (CF + Cầu Lặp):
 
 | Config | Ngày có tín hiệu | Avg số | Lift |
 |--------|-------------------|--------|------|
@@ -94,7 +94,7 @@ Layer 3 — Không pick
 | min_rbk=5, min_cf_lift=3.0 | 16/30 | 4.8 | **1.26x** |
 | min_rbk=4, min_cf_lift=3.0 | 14/30 | 3.1 | **1.26x** |
 
-#### RBK Cầu Lặp alone (min_cau=X):
+#### Cầu Lặp alone (min_cau=X):
 
 | Config | Avg số | Lift |
 |--------|--------|------|
@@ -121,7 +121,7 @@ Layer 3 — Không pick
 |-------|---------|-------|
 | `top` | 20 | Max số trả về |
 | `min_cf_lift` | 3.0 | Lift tối thiểu cho conditional frequency |
-| `min_rbk_cau` | 4 | Số cầu tối thiểu cho RBK cầu lặp |
+| `min_rbk_cau` | 4 | Số cầu tối thiểu cho cầu lặp |
 | `strategy` | `intersection` | `intersection` / `cf_only` / `rbk_only` |
 | `fallback` | `cf_only` | Khi ko có intersection: `cf_only` / `rbk_only` / **`none`** (default v4.3) |
 
@@ -172,7 +172,7 @@ Response:
 - [x] `intersection_service.py`
 - [x] `GET /stats/intersection` endpoint
 - [x] `GET /stats/intersection/evaluate`
-- [x] `POST /stats/intersection/backtest` — param tuning + so sánh CF/RBK alone
+- [x] `POST /stats/intersection/backtest` — param tuning + so sánh CF/cầu lặp alone
 - [x] `tests/test_intersection_service.py`
 
 ### Phase 5 — Cleanup ✅
@@ -187,5 +187,5 @@ Response:
 |---------|------|---------|
 | v1.0 | 2026-06-20 | Initial prediction engine spec |
 | v2.0 | 2026-06-21 | Convert to stats + candidate pool |
-| v3.0 | 2026-06-21 | Module 7 (Conditional Frequency), Module 8 (RBK Crawler) |
-| **v4.0** | **2026-06-21** | **Intersection Engine — CF + RBK, lift 2.3x** |
+| v3.0 | 2026-06-21 | Module 7 (Conditional Frequency), Module 8 (Cầu Crawler) |
+| **v4.0** | **2026-06-21** | **Intersection Engine — CF + cầu lặp, lift 2.3x** |

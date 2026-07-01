@@ -1,4 +1,4 @@
--- RBK analytics schema (PostgreSQL)
+-- Analytics schema (PostgreSQL)
 
 CREATE TYPE region_code AS ENUM ('MB', 'MN', 'MT');
 

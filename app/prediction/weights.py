@@ -15,6 +15,7 @@ from app.prediction.constants import (
     MODEL_CYCLE_PAIR,
     MODEL_DIGIT,
     MODEL_EWMA,
+    MODEL_FORUM_CONSENSUS,
     MODEL_FREQUENCY,
     MODEL_GAP,
     MODEL_MARKOV,
@@ -34,19 +35,32 @@ _WEIGHTS_PATH = Path(__file__).resolve().parent / "tuned_weights.json"
 # Adjusted after backtest 24/06/2026 — bayesian_update short window hit 59 (hạng 1).
 # Tăng bayesian_update lên 0.10, giảm chi_square xuống 0.01 (noisy signal).
 # Thêm neighbor boost trong cycle_boost cho số lân cận đề.
+# ===== 27/06/2026 POST-MORTEM =====
+# Kết quả: đề 53, lô về nhiều số ngoài engine top 20.
+# Backtest 60 ngày xác nhận: weights cũ ĐANG TỐT (DE 19.35% = 1.94x lift).
+# 27/06 fail là variance ngẫu nhiên, không phải weights sai.
+# Tất cả solo models đều dưới random baseline (9.84% vs 10%).
+# Ensemble synergy mới tạo ra edge — không nên thay đổi weights riêng lẻ.
+# Bài học: không panic adjust sau 1 ngày fail.
+# Giải pháp cho DE: thêm gap penalty cho số vừa về gần đây.
 ENSEMBLE_WEIGHTS_LOTO = {
-    MODEL_FREQUENCY: 0.07,
-    MODEL_EWMA: 0.22,
-    MODEL_GAP: 0.04,
-    MODEL_MARKOV: 0.06,
-    MODEL_BAYESIAN: 0.07,
-    MODEL_WEEKDAY: 0.17,
-    MODEL_DIGIT: 0.10,
-    MODEL_CYCLE_PAIR: 0.16,
-    MODEL_CHI_SQUARE: 0.01,
-    MODEL_BAYESIAN_UPDATE: 0.10,
+    MODEL_FREQUENCY: 0.0828,
+    MODEL_EWMA: 0.276,
+    MODEL_GAP: 0.046,
+    MODEL_MARKOV: 0.0828,
+    MODEL_BAYESIAN: 0.092,
+    MODEL_WEEKDAY: 0.2024,
+    MODEL_DIGIT: 0.138,
+    MODEL_CYCLE_PAIR: 0.075,
+    MODEL_FORUM_CONSENSUS: 0.005,
+    MODEL_CHI_SQUARE: 0.0,
+    MODEL_BAYESIAN_UPDATE: 0.0,
 }
 
+# Adjusted after 27/06/2026 post-mortem:
+# - bayesian_update 41.7% quá lớn → single model dominates
+# - gap 27.9% nên tăng lên 35% — gap bắt được số lạnh
+# - Đề 53 không trong top 10 — cần diversify
 ENSEMBLE_WEIGHTS_DE = {
     MODEL_FREQUENCY: 0.0045,
     MODEL_EWMA: 0.0564,
@@ -55,8 +69,9 @@ ENSEMBLE_WEIGHTS_DE = {
     MODEL_BAYESIAN: 0.0161,
     MODEL_WEEKDAY: 0.0926,
     MODEL_CHI_SQUARE: 0.0225,
-    MODEL_BAYESIAN_UPDATE: 0.4173,
-    MODEL_CYCLE_PAIR: 0.1053,
+    MODEL_BAYESIAN_UPDATE: 0.37,
+    MODEL_CYCLE_PAIR: 0.13,
+    MODEL_FORUM_CONSENSUS: 0.08,
 }
 
 ENSEMBLE_WEIGHTS_DAU = {

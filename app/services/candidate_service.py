@@ -97,7 +97,7 @@ FILTER_SOURCE_GROUPS = {
     "chi-square": {"chi-square", "de-chi-square"},           # same model
     "frequency": {"frequency-hot", "frequency-rank", "frequency-trend",
                   "de-frequency-rank", "de-frequency-trend"},# same data
-    "rbk": {"rbk-cau", "rbk-cau-no-loan"},                   # both from RBK
+    "rbk": {"rbk-cau", "rbk-cau-no-loan"},                   # both from cau crawler
     "cycle": {"gap-hot", "max-cycle", "cycle-history"},      # same gap data
     "calendar": {"calendar", "de-calendar"},                 # same weekday data
     "cond-freq": {"cond-freq-loto", "cond-freq-de", "de-cond-prev"},  # same conditional frequency
@@ -502,8 +502,8 @@ def _de_intersection_filter_matches(target_date: str) -> list[FilterMatch]:
             "yesterday_db": result["yesterday_db"],
         }
         reason = (
-            f"de-intersection: CF∩RBK sau đề {result['yesterday_db']} → {lot} "
-            f"(CF lift {cf_lift}x, RBK {rbk_cau} cầu)"
+            f"de-intersection: CF∩cầu sau đề {result['yesterday_db']} → {lot} "
+            f"(CF lift {cf_lift}x, {rbk_cau} cầu)"
         )
         matches.append((lot, reason, detail))
     return matches
@@ -681,7 +681,7 @@ def _rbk_cau_filter_matches(as_of_date: str) -> list[FilterMatch]:
     return _dict_to_matches(
         rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1, lon=0, nhay=1),
         lambda lot, info: (
-            f"rbk-cau: {lot} có {info['cau_count']} cầu RBK (không lộn, weight {info['weight']})"
+            f"rbk-cau: {lot} có {info['cau_count']} cầu (không lộn, weight {info['weight']})"
         ),
     )
 
@@ -690,7 +690,7 @@ def _rbk_cau_no_loan_filter_matches(as_of_date: str) -> list[FilterMatch]:
     return _dict_to_matches(
         rbk_cau_loto_matches(as_of_date, limit=5, min_cau=1, lon=1, nhay=1),
         lambda lot, info: (
-            f"rbk-cau-no-loan: {lot} có {info['cau_count']} cầu RBK (lộn, weight {info['weight']})"
+            f"rbk-cau-no-loan: {lot} có {info['cau_count']} cầu (lộn, weight {info['weight']})"
         ),
     )
 

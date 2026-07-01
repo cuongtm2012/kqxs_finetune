@@ -1,0 +1,4 @@
+# OpenSpec — analysis-rbk-py backend
+project: analysis-rbk-py
+version: 1
+default_timezone: Asia/Ho_Chi_Minh
