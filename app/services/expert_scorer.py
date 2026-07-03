@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "data" / "expert_weights.json"
 ALIASES_PATH = Path(__file__).resolve().parent.parent / "data" / "expert_aliases.json"
@@ -78,6 +81,13 @@ def weighted_number_scores(picks: list[dict]) -> dict[str, dict]:
     return scores
 
 
+@lru_cache(maxsize=1)
+def _backtest_users_snapshot() -> dict:
+    from app.services.expert_backtest_service import run_backtest
+
+    return run_backtest(90).get("users", {})
+
+
 def expert_performance(
     username: str,
     pick_type: str,
@@ -89,8 +99,7 @@ def expert_performance(
     if perf:
         return {"hits": perf["hits"], "total": perf["total"], "rate_pct": perf["rate_pct"]}
     try:
-        from app.services.expert_backtest_service import run_backtest
-        users = run_backtest(90).get("users", {})
+        users = _backtest_users_snapshot()
         user_key = canonical_username(username)
         bucket = users.get(user_key) or {}
         stats = bucket.get(pick_type) or bucket.get("default")
@@ -102,6 +111,7 @@ def expert_performance(
                 "rate_pct": round(rate * 100, 1),
             }
     except Exception:
+        logger.exception("expert_winrate failed for expert_username=%s", expert_username)
         pass
     return None
 
@@ -121,6 +131,9 @@ def live_experts(picks: list[dict]) -> list[dict]:
             "performance": perf,
             "posted_at": p.get("posted_at"),
             "forum": p.get("forum"),
+            "post_id": p.get("post_id"),
+            "thread_id": p.get("thread_id"),
+            "thread_url": p.get("thread_url"),
         })
     rows.sort(key=lambda x: (-x["weight"], x["user"]))
     return rows

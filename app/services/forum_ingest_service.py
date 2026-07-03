@@ -3,8 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import logging
+
 from app.repositories.forum_repo import forum_repo
 from app.services.expert_scorer import canonical_username
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -17,6 +21,7 @@ def _parse_ts(value: Any) -> datetime | None:
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
+            logger.exception("_parse_ts failed for value: %s", value)
             return None
     return None
 
@@ -78,6 +83,10 @@ def _extract_pick_rows(posts: dict[str, Any]) -> dict[tuple[str, str], dict]:
             consider("stl", picks["stl"])
         if picks.get("btl"):
             consider("btl", picks["btl"])
+        if picks.get("std_de"):
+            consider("std_de", [str(x).zfill(2) for x in picks["std_de"]])
+        if picks.get("btd_de"):
+            consider("btd_de", [str(x).zfill(2) for x in picks["btd_de"]])
         de = picks.get("de") or {}
         if de.get("cham"):
             consider("de_cham", [str(x) for x in de["cham"]])
@@ -89,6 +98,8 @@ def _extract_pick_rows(posts: dict[str, Any]) -> dict[tuple[str, str], dict]:
             consider("btd", [str(x).zfill(2) for x in picks["btd"]])
         if picks.get("btd_dau"):
             consider("btd_dau", [str(x) for x in picks["btd_dau"]])
+        if picks.get("de_list"):
+            consider("de_list", [str(x).zfill(2) for x in picks["de_list"]])
         if picks.get("dan_de"):
             ext_pt = picks.get("dan_pick_type")
             if ext_pt in ("dan_40s", "dan_36s", "dan_64s"):

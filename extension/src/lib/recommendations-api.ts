@@ -24,6 +24,9 @@ export interface LiveExpertRow {
   performance?: ExpertPerformance | null;
   posted_at?: string;
   forum?: string;
+  post_id?: string;
+  thread_id?: string;
+  thread_url?: string;
 }
 
 export interface DeChamLeader {

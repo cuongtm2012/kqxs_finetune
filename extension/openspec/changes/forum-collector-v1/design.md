@@ -181,12 +181,24 @@ POST /forum/picks
 Body: full CollectSession (posts + summary + window metadata)
 
 GET /forum/recommendations?target_date=YYYY-MM-DD
-Response: forum-only picks (source: "forum")
+Response: forum-only picks (source: "forum", dual panel trọng số + đồng thuận)
+
+GET /forum/score?target_date=YYYY-MM-DD
+POST /forum/score/run?target_date=YYYY-MM-DD
+
+GET /stats/candidates, /stats/de-candidates, /stats/intersection
+GET /predictions/next, /analytics/summary
 ```
 
 Extension settings: `api_base_url` (default `http://localhost:18715`), `auto_sync` toggle.
 
-Popup tab **Đề xuất** gọi API trực tiếp qua `recommendations-api.ts` (không qua service worker). Tự fallback port `8081` / `127.0.0.1` nếu primary fail.
+Popup **4 tab**: Thu thập | Đề xuất | Engine | Kết quả.
+
+- **Đề xuất**: `recommendations-api.ts` — fetch API trước, render ngay; poll forum không chặn UI.
+- **Engine**: `engine-api.ts` — stats + intersection + prediction bundle.
+- **Kết quả**: `score-api.ts` — đối chiếu mketqua, ngày quay theo `getLatestDrawScoreDate`.
+
+Tự fallback port `8081` / `127.0.0.1` nếu primary fail.
 
 > Port `18715` khớp `APP_PORT` env của backend (`app/config.py` default). **Không** dùng `PORT=`.
 

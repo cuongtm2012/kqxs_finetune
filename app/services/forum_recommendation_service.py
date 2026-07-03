@@ -441,7 +441,33 @@ def build_recommendations(target_date: str) -> dict[str, Any]:
     session = forum_repo.get_session(target_date)
     forum = forum_repo.summary_dict_from_picks(target_date)
     forum["target_date"] = target_date
-    picks_rows = dedupe_picks_by_user(forum_repo.get_user_picks(target_date))
+    raw_picks = forum_repo.get_user_picks(target_date)
+
+    # Enrich pick rows with thread info (topic) using forum session payload.
+    # We already store post_id in forum_user_picks, and session payload stores {post_id -> thread_id}.
+    post_to_thread: dict[str, dict[str, str]] = {}
+    try:
+        payload = (session or {}).get("payload") or {}
+        posts = payload.get("posts") or {}
+        for pid, post in posts.items():
+            if not pid:
+                continue
+            tid = post.get("thread_id")
+            if not tid:
+                continue
+            post_to_thread[str(pid)] = {
+                "thread_id": str(tid),
+                "thread_url": f"https://forumketqua.net/threads/{tid}",
+            }
+    except Exception:
+        post_to_thread = {}
+
+    for p in raw_picks:
+        pid = str(p.get("post_id") or "")
+        if pid and pid in post_to_thread:
+            p.update(post_to_thread[pid])
+
+    picks_rows = dedupe_picks_by_user(raw_picks)
     dan_board = _collect_dan_board(picks_rows)
     experts = _live_experts_no_dan(picks_rows)
     all_experts = live_experts(picks_rows)

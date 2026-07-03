@@ -156,7 +156,7 @@ class RbkService:
 
                 rank = 0
                 if "rank" in obj and isinstance(obj["rank"], int):
-                    rank = hash(obj["rank"])
+                    rank = int(obj["rank"])
 
                 item = {
                     "lo": [str(v) for v in obj.get("lo", [])],
@@ -300,7 +300,15 @@ class RbkService:
             logger.exception(exc)
         return results
 
-    def _parse_ket_qua_mn(self, first_str: str, ngaychot: str) -> dict:
+    def _parse_ket_qua(self, first_str: str, ngaychot: str, *, full_kq17: bool = False) -> dict:
+        """Parse kết quả xổ số từ chuỗi đầu vào.
+
+        Args:
+            first_str: Chuỗi kết quả cần parse
+            ngaychot: Ngày chốt
+            full_kq17: Nếu True, lấy toàn bộ phần còn lại cho kq17 (MT style).
+                       Nếu False, chỉ lấy 3 ký tự đầu (MN style).
+        """
         kq: dict = {f"kq{i}": "" for i in range(18)}
         try:
             location = first_str[first_str.index("[") + 1 : first_str.index("]")]
@@ -338,57 +346,18 @@ class RbkService:
             s = s[s.index("7:") + 2 :]
             kq["kq16"] = s[: s.index("8:")].strip()
             s = s[s.index("8:") + 2 :]
-            kq["kq17"] = s[:3].strip()
+            kq["kq17"] = s[:].strip() if full_kq17 else s[:3].strip()
             kq["location"] = location
             kq["ngaychot"] = ngaychot
         except Exception as exc:
             logger.exception(exc)
         return kq
 
+    def _parse_ket_qua_mn(self, first_str: str, ngaychot: str) -> dict:
+        return self._parse_ket_qua(first_str, ngaychot, full_kq17=False)
+
     def _parse_ket_qua_mt(self, first_str: str, ngaychot: str) -> dict:
-        kq: dict = {f"kq{i}": "" for i in range(18)}
-        try:
-            location = first_str[first_str.index("[") + 1 : first_str.index("]")]
-            s = first_str[first_str.index("]") :]
-            kq["kq0"] = s[s.index("ĐB:") + 3 : s.index("1:")].strip()
-            s = s[s.index("1:") :]
-            kq["kq1"] = s[s.index("1:") + 3 : s.index("2:")].strip()
-            s = s[s.index("2:") :]
-            kq["kq2"] = s[s.index("2:") + 3 : s.index("3:")].strip()
-            s = s[s.index("3:") :]
-            kq["kq3"] = s[s.index("3:") + 3 : s.index("3:") + 8].strip()
-            kq["kq4"] = s[s.index("-") + 2 : s.index("4:")].strip()
-            s = s[s.index("4:") :]
-            kq["kq5"] = s[s.index("4:") + 3 : s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq6"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq7"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq8"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq9"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq10"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq11"] = s[: s.index("5:")].strip()
-            s = s[s.index("5:") + 3 :]
-            kq["kq12"] = s[: s.index("6:")].strip()
-            s = s[s.index("6:") + 2 :]
-            kq["kq13"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq14"] = s[: s.index("-")].strip()
-            s = s[s.index("-") + 2 :]
-            kq["kq15"] = s[: s.index("7:")].strip()
-            s = s[s.index("7:") + 2 :]
-            kq["kq16"] = s[: s.index("8:")].strip()
-            s = s[s.index("8:") + 2 :]
-            kq["kq17"] = s[:].strip()
-            kq["location"] = location
-            kq["ngaychot"] = ngaychot
-        except Exception as exc:
-            logger.exception(exc)
-        return kq
+        return self._parse_ket_qua(first_str, ngaychot, full_kq17=True)
 
     def _parsing_number(self, dau: dict, dit: dict, val: str) -> None:
         if not validate_string(val):

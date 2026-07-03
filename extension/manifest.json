@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Forum Collector",
-  "version": "1.3.6",
+  "version": "1.5.0",
   "description": "Thu thập pick XSMB từ forumketqua.net (mở bát, thảo luận, chăn nuôi)",
   "permissions": ["alarms", "storage", "downloads", "cookies", "scripting", "tabs"],
   "host_permissions": [

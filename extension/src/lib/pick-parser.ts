@@ -1,7 +1,24 @@
 import type { PostPicks } from "../types/forum.js";
 
+function latestDaySection(text: string): string {
+  // Support both:
+  // - "Ngày 02.07.2026"
+  // - "2/7" or "02/07/2026" (common shorthand in TL posts)
+  const re1 = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}/gi;
+  const re2 = /(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b/gi;
+  const matches = [...text.matchAll(re1), ...text.matchAll(re2)].sort(
+    (a, b) => (a.index ?? 0) - (b.index ?? 0),
+  );
+  if (!matches.length) return text;
+  const last = matches[matches.length - 1];
+  // If there is only one date marker, still scope to it: treat post as multi-day log.
+  return text.slice(last.index ?? 0).trim();
+}
+
 export function extractStl(text: string): string[] {
-  const nums = new Set<string>();
+  // STL (song thủ lô) SHOULD be a single pair (2 numbers).
+  // Monthly "nuôi khung" threads often contain many historical pairs; we only take the latest pair found.
+  let lastPair: [string, string] | null = null;
   const patterns = [
     /STL[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})/gi,
     // Common forum patterns:
@@ -14,16 +31,37 @@ export function extractStl(text: string): string[] {
   for (const pat of patterns) {
     let m: RegExpExecArray | null;
     while ((m = pat.exec(text)) !== null) {
-      nums.add(m[1]);
-      nums.add(m[2]);
+      lastPair = [m[1], m[2]];
     }
   }
-  return [...nums].sort();
+  if (!lastPair) return [];
+  return [lastPair[0], lastPair[1]];
 }
 
 export function extractBtl(text: string): string[] {
   const nums = new Set<string>();
   const re = /BTL[:\s]*(\d{2})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) nums.add(m[1]);
+  return [...nums].sort();
+}
+
+export function extractStdDe(text: string): string[] {
+  // Preserve pair semantics: return tokens like "59-89" (not flattened numbers).
+  // A user can "nuôi" multiple pairs in one post; keep all unique pairs in appearance order.
+  const pairs: string[] = [];
+  const re = /(?:STĐ|STD)\s*[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const token = `${m[1]}-${m[2]}`;
+    if (!pairs.includes(token)) pairs.push(token);
+  }
+  return pairs;
+}
+
+export function extractBtdDe(text: string): string[] {
+  const nums = new Set<string>();
+  const re = /(?:BTĐ|BTD)\s*[:\s]+(\d{2})\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) nums.add(m[1]);
   return [...nums].sort();
@@ -103,6 +141,16 @@ export function extractDeInfo(text: string): PostPicks["de"] {
       result.dau.push(m[1]);
     }
   }
+  // Lookingfor-style shorthand: "ĐB: CT1,6 (CT2,7; CT3,8) hạ C13458"
+  for (const m of text.matchAll(/đb\s*:\s*([\s\S]*?)(?=bộ\s*:|20\s*em|1s:|3,4d:|$)/gi)) {
+    const chunk = m[1];
+    for (const ct of chunk.matchAll(/CT\s*([\d,\s]+)/gi)) {
+      result.cham.push(...parseDigitList(ct[1]));
+    }
+    for (const h of chunk.matchAll(/(?:hạ\s*)?C\s*([0-9,\s]+)/gi)) {
+      result.cham.push(...parseDigitList(h[1]));
+    }
+  }
   result.cham = [...new Set(result.cham)];
   result.tong = [...new Set(result.tong)];
   result.dau = [...new Set(result.dau)];
@@ -160,23 +208,28 @@ export function extractMucLo(text: string): Record<number, string[]> {
 }
 
 export function parsePicksFromContent(raw: string, threadTitle = ""): PostPicks {
+  const scoped = latestDaySection(raw);
   const picks: PostPicks = {};
-  const stl = extractStl(raw);
+  const stl = extractStl(scoped);
   if (stl.length) picks.stl = stl;
-  const btl = extractBtl(raw);
+  const btl = extractBtl(scoped);
   if (btl.length) picks.btl = btl;
-  const de = extractDeInfo(raw);
+  const stdDe = extractStdDe(scoped);
+  if (stdDe.length) picks.std_de = stdDe;
+  const btdDe = extractBtdDe(scoped);
+  if (btdDe.length) picks.btd_de = btdDe;
+  const de = extractDeInfo(scoped);
   if (de && (de.cham.length || de.tong.length || de.dau.length)) picks.de = de;
-  const btd = extractBtd(raw);
+  const btd = extractBtd(scoped);
   if (btd.length) picks.btd = btd;
-  const btdDau = extractBtdDau(raw);
+  const btdDau = extractBtdDau(scoped);
   if (btdDau.length) picks.btd_dau = btdDau;
-  const dan = extractDanDe(raw);
+  const dan = extractDanDe(scoped);
   if (dan.length) {
     picks.dan_de = dan;
-    picks.dan_pick_type = inferDanPickType(dan.length, threadTitle, raw);
+    picks.dan_pick_type = inferDanPickType(dan.length, threadTitle, scoped);
   }
-  const muc = extractMucLo(raw);
+  const muc = extractMucLo(scoped);
   if (Object.keys(muc).length) picks.muc_lo = muc;
   return picks;
 }

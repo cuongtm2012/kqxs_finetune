@@ -1,8 +1,10 @@
 import type { CollectSession, DiscoveredThread, ForumKey } from "../types/forum.js";
 import {
   getCollectWindow,
+  getNextRolloverMs,
   getTargetDate,
   getWindowBoundsMs,
+  isAfterResultCutoff,
   isInCollectWindow,
   isSunday,
   shouldFinalize,
@@ -19,10 +21,25 @@ import { syncSessionToApi } from "./api-client.js";
 import {
   getSession,
   getSettings,
+  getRuntimeStatus,
   patchRuntimeStatus,
   pruneOldSessions,
   saveSession,
 } from "./storage.js";
+import type { ExtensionSettings } from "../types/forum.js";
+
+async function finalizeCollectSession(
+  session: CollectSession,
+  settings: ExtensionSettings,
+): Promise<void> {
+  if (session.finalized_at) return;
+  session.summary = buildSummary(session, settings);
+  session.finalized_at = new Date().toISOString();
+  await saveSession(session);
+  if (settings.auto_sync) {
+    await syncSessionToApi(session);
+  }
+}
 
 function threadStorageKey(forum: ForumKey, slug: string): string {
   return forum === "chan_nuoi" ? `chan_nuoi:${slug}` : forum;
@@ -155,6 +172,15 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   const now = new Date();
   const targetDate = getTargetDate(now, settings.timezone);
   const force = options.force === true;
+  const runtime = await getRuntimeStatus();
+  const rolledOver = Boolean(runtime.target_date && runtime.target_date !== targetDate);
+
+  if (rolledOver) {
+    const prevSession = await getSession(runtime.target_date);
+    if (prevSession) {
+      await finalizeCollectSession(prevSession, settings);
+    }
+  }
 
   if (isSunday(targetDate)) {
     await patchRuntimeStatus({
@@ -178,14 +204,16 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   }
 
   let session = await loadOrCreateSession(targetDate);
+  if (rolledOver) {
+    session.discovered_threads = undefined;
+  }
   const inWindow = isInCollectWindow(now, targetDate, settings.timezone);
   const finalize = !force && shouldFinalize(now, targetDate, settings.timezone);
 
   if (!force && (session.finalized_at || finalize)) {
     session.summary = buildSummary(session, settings);
     if (!session.finalized_at) {
-      session.finalized_at = new Date().toISOString();
-      await syncSessionToApi(session);
+      await finalizeCollectSession(session, settings);
     }
     await saveSession(session);
     await patchRuntimeStatus({
@@ -214,7 +242,12 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   const { startMs, endMs } = force
     ? { startMs: 0, endMs: Number.MAX_SAFE_INTEGER }
     : getWindowBoundsMs(targetDate, settings.timezone);
-  const threads = await resolveThreads(targetDate, session, settings.pinned_chan_nuoi_patterns, force);
+  const threads = await resolveThreads(
+    targetDate,
+    session,
+    settings.pinned_chan_nuoi_patterns,
+    force || rolledOver,
+  );
 
   if (!threads.some((t) => t.forum === "thao_luan")) {
     await patchRuntimeStatus({
@@ -254,7 +287,7 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     new_posts_last_poll: totalAdded,
     last_poll_at: new Date().toISOString(),
     last_error: undefined,
-    last_poll_status: `collecting (+${totalAdded})`,
+    last_poll_status: rolledOver ? "rolled_over" : `collecting (+${totalAdded})`,
   });
 
   return { added: totalAdded, status: "collecting" };
@@ -263,11 +296,15 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
 export async function setupAlarms(): Promise<void> {
   const settings = await getSettings();
   const now = new Date();
-  const inWindow = isInCollectWindow(now, getTargetDate(now, settings.timezone), settings.timezone);
+  const targetDate = getTargetDate(now, settings.timezone);
+  const inWindow = isInCollectWindow(now, targetDate, settings.timezone);
   const minutes = inWindow
     ? settings.poll_interval_active_min
     : settings.poll_interval_idle_min;
 
   await chrome.alarms.clear("rbk-poll");
   chrome.alarms.create("rbk-poll", { periodInMinutes: minutes });
+
+  await chrome.alarms.clear("rbk-rollover");
+  chrome.alarms.create("rbk-rollover", { when: getNextRolloverMs(now, settings.timezone) });
 }

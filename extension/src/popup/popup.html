@@ -10,7 +10,7 @@
   <header>
     <h1>Forum Collector</h1>
     <div class="header-actions">
-      <button id="btn-toggle-settings" type="button" class="icon-btn" title="Cài đặt" aria-expanded="false" aria-controls="settings-panel">
+      <button id="btn-toggle-settings" type="button" class="icon-btn" title="Cài đặt" aria-expanded="true" aria-controls="settings-panel">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="12" cy="12" r="3"/>
           <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
@@ -23,6 +23,8 @@
   <nav class="tabs" role="tablist">
     <button id="tab-collect" type="button" class="tab active" role="tab" aria-selected="true">Thu thập</button>
     <button id="tab-reco" type="button" class="tab" role="tab" aria-selected="false">Đề xuất</button>
+    <button id="tab-engine" type="button" class="tab" role="tab" aria-selected="false">Engine</button>
+    <button id="tab-score" type="button" class="tab" role="tab" aria-selected="false">Kết quả</button>
   </nav>
 
   <div id="panel-collect" class="tab-panel">
@@ -73,39 +75,77 @@
 
     <section class="card reco-meta">
       <div class="row">
+        <span>Ngày quay</span>
+        <strong id="reco-target-date">—</strong>
+      </div>
+      <div class="row">
         <span>Cao thủ chốt</span>
         <strong id="reco-expert-count">—</strong>
       </div>
+      <p id="reco-freshness-hint" class="reco-freshness-hint muted hidden"></p>
     </section>
 
     <section class="card">
-      <h2>Chốt đề theo cao thủ</h2>
+      <h2>
+        Chốt đề theo cao thủ
+        <button
+          type="button"
+          class="panel-collapse-btn"
+          id="toggle-reco-de-by-expert"
+          aria-label="Thu/gộp Chốt đề theo cao thủ"
+          aria-expanded="true"
+        >
+          ▾
+        </button>
+      </h2>
       <p class="muted de-by-expert-hint">Thảo luận + chốt đề — dàn chăn nuôi gom gọn bên dưới</p>
       <div id="reco-de-by-expert" class="de-by-expert-list muted">Chưa tải…</div>
     </section>
 
     <section class="card">
-      <h2>Dàn đề cao thủ <span class="muted">(chi tiết)</span></h2>
+      <h2>
+        Dàn đề cao thủ <span class="muted">(chi tiết)</span>
+        <button
+          type="button"
+          class="panel-collapse-btn"
+          id="toggle-reco-dan-board"
+          aria-label="Thu/gộp Dàn đề cao thủ"
+          aria-expanded="true"
+        >
+          ▾
+        </button>
+      </h2>
       <div id="reco-dan-board" class="dan-board muted">Chưa tải…</div>
     </section>
 
     <section class="card">
-      <h2>Gợi ý loại trừ (theo hiệu suất)</h2>
+      <h2>
+        Gợi ý loại trừ (theo hiệu suất)
+        <button
+          type="button"
+          class="panel-collapse-btn"
+          id="toggle-reco-dan-filter"
+          aria-label="Thu/gộp Gợi ý loại trừ"
+          aria-expanded="true"
+        >
+          ▾
+        </button>
+      </h2>
       <div id="reco-dan-filter" class="dan-filter muted">Chưa tải…</div>
     </section>
 
     <section class="card">
       <h2>Cao thủ đang chốt</h2>
       <table class="reco-table">
-        <thead><tr><th>Cao thủ</th><th>Khu</th><th>Loại</th><th>Số</th><th>Hiệu suất</th><th>W</th></tr></thead>
+        <thead><tr><th>Cao thủ</th><th>Khu</th><th>Topic</th><th>Loại</th><th>Số</th><th>Hiệu suất</th><th>W</th></tr></thead>
         <tbody id="reco-experts-rows"></tbody>
       </table>
     </section>
 
-    <section class="card">
-      <h2>Top lô cao thủ</h2>
-      <table class="reco-table">
-        <thead><tr><th>#</th><th>Số</th><th>Trọng số</th><th>Cao thủ</th></tr></thead>
+    <section class="card reco-panel reco-panel-expert">
+      <h2 class="reco-panel-title">Top lô cao thủ <span class="muted">(theo W)</span></h2>
+      <table class="reco-table reco-table-expert-loto">
+        <thead><tr><th>#</th><th>Cao thủ</th><th>Khu</th><th>STL</th><th>BTL</th><th>W</th></tr></thead>
         <tbody id="reco-loto-rows"></tbody>
       </table>
     </section>
@@ -126,27 +166,122 @@
     </section>
     <p id="reco-error" class="error hidden"></p>
     </div>
+
+    <div id="pick-who-popup" class="pick-who-popup hidden" hidden role="dialog" aria-modal="true" aria-labelledby="pick-who-title">
+      <div class="pick-who-backdrop" tabindex="-1"></div>
+      <div class="pick-who-card">
+        <button type="button" class="pick-who-close" aria-label="Đóng">×</button>
+        <h3 id="pick-who-title">—</h3>
+        <p id="pick-who-sub" class="muted">—</p>
+        <ul id="pick-who-list" class="pick-who-list"></ul>
+      </div>
+    </div>
   </div>
 
-  <div id="settings-panel" class="settings-panel hidden" hidden>
+  <div id="panel-engine" class="tab-panel hidden" hidden>
+    <div id="engine-loading" class="reco-loading hidden" hidden aria-live="polite" aria-busy="false">
+      <div class="reco-loading-bar" role="progressbar">
+        <div class="reco-loading-bar-fill"></div>
+      </div>
+      <p id="engine-loading-text" class="reco-loading-text">Đang tải engine…</p>
+    </div>
+
+    <div id="engine-content" class="reco-content">
+      <section class="card reco-meta">
+        <div class="row"><span>Dự đoán cho</span><strong id="engine-target-date">—</strong></div>
+        <div class="row"><span>KQXS mới nhất</span><strong id="engine-as-of">—</strong></div>
+        <div class="row"><span>DB draws</span><span id="engine-db-draws" class="muted">—</span></div>
+        <div class="row"><span>API</span><span id="engine-api-base" class="cfg-value muted">—</span></div>
+        <p id="engine-stale-warn" class="engine-stale-warn hidden"></p>
+        <p id="engine-disclaimer" class="reco-freshness-hint muted hidden"></p>
+      </section>
+
+      <section class="card reco-panel engine-panel-stats">
+        <h2 class="reco-panel-title">Stats Engine — Lô <span class="muted">(/stats/candidates)</span></h2>
+        <table class="reco-table">
+          <thead><tr><th>#</th><th>Lô</th><th>Điểm</th><th>Filter</th></tr></thead>
+          <tbody id="engine-loto-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="card reco-panel engine-panel-de">
+        <h2 class="reco-panel-title">Stats Engine — Đề <span class="muted">(top đề)</span></h2>
+        <table class="reco-table">
+          <thead><tr><th>#</th><th>Đề</th><th>Điểm</th><th>Filter</th></tr></thead>
+          <tbody id="engine-de-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="card reco-panel engine-panel-intersection">
+        <h2 class="reco-panel-title">Giao CF × RBK <span class="muted">(/stats/intersection)</span></h2>
+        <p id="engine-intersection-meta" class="muted engine-intersection-meta">—</p>
+        <div class="row"><span>CF top</span><span id="engine-cf-top" class="nums muted">—</span></div>
+        <div class="row"><span>RBK cầu</span><span id="engine-rbk-top" class="nums muted">—</span></div>
+        <div class="row"><span>Chốt giao</span><strong id="engine-final-picks" class="nums">—</strong></div>
+      </section>
+
+      <section class="card reco-panel engine-panel-predict">
+        <h2 class="reco-panel-title">Prediction <span class="muted">(ensemble, legacy)</span></h2>
+        <table class="reco-table">
+          <thead><tr><th>#</th><th>Lô</th><th>Score</th></tr></thead>
+          <tbody id="engine-predict-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="card actions">
+        <button id="btn-refresh-engine" type="button">
+          <span class="btn-spinner" aria-hidden="true"></span>
+          <span class="btn-label">Tải engine</span>
+        </button>
+      </section>
+      <p id="engine-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <div id="panel-score" class="tab-panel hidden" hidden>
+    <section class="card reco-meta">
+      <div class="row"><span>Ngày quay</span><strong id="score-target-date">—</strong></div>
+      <div class="row"><span>Đề (ĐB)</span><strong id="score-de">—</strong></div>
+      <div class="row"><span>Giải ĐB</span><span id="score-db" class="nums muted">—</span></div>
+      <div class="row"><span>Trúng / Tổng</span><strong id="score-summary">—</strong></div>
+      <p id="score-cutoff-hint" class="reco-freshness-hint muted">Chỉ tính pick chốt trước 18:00 (ICT)</p>
+    </section>
+
+    <section class="card">
+      <h2>Đối chiếu cao thủ</h2>
+      <table class="reco-table reco-table-score">
+        <thead><tr><th>Cao thủ</th><th>Loại</th><th>Số</th><th>KQ</th></tr></thead>
+        <tbody id="score-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="card actions">
+      <button id="btn-refresh-score" type="button">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span class="btn-label">Tải kết quả</span>
+      </button>
+      <button id="btn-run-score" type="button" class="secondary">Chấm lại (mketqua)</button>
+    </section>
+    <p id="score-error" class="error hidden"></p>
+  </div>
+
+  <div id="settings-panel" class="settings-panel">
     <section class="card" id="auth-card">
       <h2>Đăng nhập forum</h2>
-      <div id="auth-form">
-        <label>Username <input id="auth-user" type="text" autocomplete="username" /></label>
-        <label>Password <input id="auth-pass" type="password" autocomplete="current-password" /></label>
-        <div class="btn-row">
-          <button id="btn-login" type="button">Đăng nhập lại</button>
-          <button id="btn-save-auth" type="button" class="secondary">Lưu</button>
-        </div>
+      <p id="auth-logged-hint" class="auth-logged-hint muted hidden"></p>
+      <div class="row"><span>Login URL</span><span id="cfg-login-url" class="cfg-value muted">—</span></div>
+      <div class="row"><span>Username</span><strong id="cfg-username">—</strong></div>
+      <div class="row"><span>Password</span><span id="cfg-password" class="cfg-value muted">—</span></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button id="btn-login" type="button">Đăng nhập lại</button>
       </div>
-      <p id="auth-logged-hint" class="muted hidden">Đã đăng nhập forumketqua.net</p>
     </section>
 
     <section class="card">
       <h2>Settings</h2>
-      <label>API URL <input id="api-url" type="url" /></label>
-      <label class="check"><input id="auto-sync" type="checkbox" /> Auto sync API</label>
-      <label>Poll active (phút) <input id="poll-active" type="number" min="1" max="60" /></label>
+      <div class="row"><span>API URL</span><span id="cfg-api-url" class="cfg-value muted">—</span></div>
+      <div class="row"><span>Auto sync</span><strong id="cfg-auto-sync">—</strong></div>
+      <div class="row"><span>Poll active</span><strong id="cfg-poll-active">—</strong></div>
     </section>
   </div>
 

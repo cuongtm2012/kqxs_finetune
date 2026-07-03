@@ -20,9 +20,21 @@ function set(obj: Record<string, unknown>): Promise<void> {
   return new Promise((resolve) => chrome.storage.local.set(obj, resolve));
 }
 
+function mergeWithDefaults<T extends Record<string, unknown>>(defaults: T, stored?: Partial<T>): T {
+  const out = { ...defaults };
+  if (!stored) return out;
+  for (const key of Object.keys(defaults) as (keyof T)[]) {
+    const v = stored[key];
+    if (v !== undefined && v !== null && v !== "") {
+      out[key] = v as T[keyof T];
+    }
+  }
+  return out;
+}
+
 export async function getSettings(): Promise<ExtensionSettings> {
   const s = await get<ExtensionSettings>(STORAGE_KEYS.settings);
-  return { ...DEFAULT_SETTINGS, ...s };
+  return mergeWithDefaults(DEFAULT_SETTINGS, s);
 }
 
 export async function saveSettings(partial: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
@@ -34,7 +46,7 @@ export async function saveSettings(partial: Partial<ExtensionSettings>): Promise
 
 export async function getForumAuth(): Promise<ForumAuth> {
   const a = await get<ForumAuth>(STORAGE_KEYS.forumAuth);
-  return { ...DEFAULT_FORUM_AUTH, ...a };
+  return mergeWithDefaults(DEFAULT_FORUM_AUTH, a);
 }
 
 export async function saveForumAuth(auth: Partial<ForumAuth>): Promise<ForumAuth> {
@@ -44,11 +56,22 @@ export async function saveForumAuth(auth: Partial<ForumAuth>): Promise<ForumAuth
   return next;
 }
 
+/** Ghi credentials/settings mặc định nếu storage trống hoặc thiếu field quan trọng. */
+export async function ensureConfigSeeded(): Promise<void> {
+  const auth = await getForumAuth();
+  const storedAuth = await get<ForumAuth>(STORAGE_KEYS.forumAuth);
+  if (!storedAuth?.username || !storedAuth?.password) {
+    await set({ [STORAGE_KEYS.forumAuth]: auth });
+  }
+  const settings = await getSettings();
+  const storedSettings = await get<ExtensionSettings>(STORAGE_KEYS.settings);
+  if (!storedSettings?.api_base_url) {
+    await set({ [STORAGE_KEYS.settings]: settings });
+  }
+}
+
 export async function seedDefaultsOnInstall(): Promise<void> {
-  const existing = await get<ForumAuth>(STORAGE_KEYS.forumAuth);
-  if (!existing) await set({ [STORAGE_KEYS.forumAuth]: DEFAULT_FORUM_AUTH });
-  const settings = await get<ExtensionSettings>(STORAGE_KEYS.settings);
-  if (!settings) await set({ [STORAGE_KEYS.settings]: DEFAULT_SETTINGS });
+  await ensureConfigSeeded();
 }
 
 export function sessionKey(targetDate: string): string {

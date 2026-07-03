@@ -3,7 +3,8 @@
 
 Đo hit rate, recall, precision cho top N picks mỗi ngày.
 So sánh với baseline random để biết engine có thực sự beat random không.
-"""
+\"\"\"
+import logging
 import os
 import sys
 import time

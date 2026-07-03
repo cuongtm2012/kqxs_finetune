@@ -10,12 +10,21 @@ export interface RawPostRow {
 
 export function extractPostsFromHtml(html: string): RawPostRow[] {
   const posts: RawPostRow[] = [];
-  const blockRe =
-    /<li[^>]*\bid="post-(\d+)"[^>]*>([\s\S]*?)<\/li>/gi;
-  let block: RegExpExecArray | null;
-  while ((block = blockRe.exec(html)) !== null) {
-    const postId = block[1];
-    const chunk = block[2];
+  const startRe = /<li[^>]*\bid="post-(\d+)"[^>]*>/gi;
+  const starts: Array<{ id: string; start: number; openEnd: number }> = [];
+  let start: RegExpExecArray | null;
+  while ((start = startRe.exec(html)) !== null) {
+    starts.push({
+      id: start[1],
+      start: start.index,
+    });
+  }
+  for (let i = 0; i < starts.length; i += 1) {
+    const cur = starts[i];
+    const next = starts[i + 1];
+    const end = next ? next.start : html.length;
+    const postId = cur.id;
+    const chunk = html.slice(cur.start, end);
     const user =
       chunk.match(/data-author="([^"]+)"/i)?.[1]?.trim() ||
       chunk.match(/class="username"[^>]*>([^<]+)</i)?.[1]?.trim() ||
@@ -92,8 +101,9 @@ export function extractThreadLinks(html: string): { url: string; title: string; 
   const links: { url: string; title: string; slug: string }[] = [];
   const seen = new Set<string>();
 
+  // Forum dùng href tương đối "threads/slug" (không có / đầu) hoặc URL đầy đủ /threads/slug
   const re =
-    /<a[^>]+href="(?:https?:\/\/[^"]*)?threads\/([^."?#/]+(?:\.[^"?#/]+)?)[^"]*"[^>]*>([^<]+)<\/a>/gi;
+    /<a[^>]+href="(?:(?:https?:\/\/[^"]*)?\/?)?threads\/([^."?#/]+(?:\.[^"?#/]+)?)[^"]*"[^>]*>([^<]+)<\/a>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const slug = m[1];

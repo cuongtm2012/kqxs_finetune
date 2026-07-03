@@ -7,8 +7,10 @@ from app.repositories.forum_repo import forum_repo
 from app.services.expert_backtest_service import run_backtest, suggest_weights, write_suggested_weights
 from app.services.expert_scorer import _load_weights, live_experts
 from app.services.expert_winrate_service import get_period_performance, refresh_period
+from app.services.expert_score_service import get_scored_day, run_daily_settlement
 from app.services.forum_ingest_service import ingest_collect_session
 from app.services.forum_recommendation_service import build_recommendations
+from app.services.forum_schedule import forum_target_date
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -31,7 +33,7 @@ def get_forum_picks(target_date: str):
 
 @router.get("/experts/live")
 def get_live_experts(target_date: Optional[str] = Query(None)):
-    d = target_date or date.today().isoformat()
+    d = target_date or forum_target_date()
     picks = forum_repo.get_user_picks(d)
     if not picks and not forum_repo.get_session(d):
         raise HTTPException(status_code=404, detail="no forum data for date")
@@ -44,7 +46,7 @@ def get_live_experts(target_date: Optional[str] = Query(None)):
 
 @router.get("/recommendations")
 def get_recommendations(target_date: Optional[str] = Query(None)):
-    d = target_date or date.today().isoformat()
+    d = target_date or forum_target_date()
     return build_recommendations(d)
 
 
@@ -79,6 +81,18 @@ def refresh_expert_performance(
     dry_run: bool = Query(False),
 ):
     return refresh_period(period, write_pick_results=write_pick_results, dry_run=dry_run)
+
+
+@router.get("/score")
+def get_draw_score(target_date: Optional[str] = Query(None)):
+    d = target_date or date.today().isoformat()
+    return get_scored_day(d)
+
+
+@router.post("/score/run")
+def run_draw_score(target_date: Optional[str] = Query(None)):
+    d = target_date or date.today().isoformat()
+    return run_daily_settlement(d, prefer_mketqua=True)
 
 
 @router.post("/experts/weights/refresh")

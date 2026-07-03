@@ -73,6 +73,29 @@ class ExpertWinrateRepository:
             conn.commit()
         return len(rows)
 
+    def get_pick_results(self, target_date: str) -> list[dict[str, Any]]:
+        rows = fetch_all(
+            """
+            SELECT target_date::text AS target_date, username, pick_type,
+                   numbers, hit, draw_de, evaluated_at
+            FROM expert_pick_results
+            WHERE target_date = %s
+            ORDER BY hit DESC, username, pick_type
+            """,
+            (target_date,),
+        )
+        return [
+            {
+                "username": r["username"],
+                "pick_type": r["pick_type"],
+                "numbers": list(r["numbers"] or []),
+                "hit": bool(r["hit"]),
+                "draw_de": r["draw_de"],
+                "evaluated_at": r["evaluated_at"].isoformat() if r["evaluated_at"] else None,
+            }
+            for r in rows
+        ]
+
     def get_performance(
         self, username: str, pick_type: str, period_label: str
     ) -> Optional[dict[str, Any]]:

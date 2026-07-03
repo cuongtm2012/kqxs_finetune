@@ -1,19 +1,40 @@
-import type { RecommendationsResponse, ConsensusChamRow, ConsensusStats, DeByExpertRow } from "../lib/recommendations-api.js";
+import type {
+  ConsensusChamRow,
+  ConsensusStats,
+  DeByExpertRow,
+  LiveExpertRow,
+  RecommendationsResponse,
+} from "../lib/recommendations-api.js";
 import { fetchRecommendationsAndSyncUrl } from "../lib/recommendations-api.js";
+import type { DrawScoreResponse } from "../lib/score-api.js";
+import { fetchDrawScore, runDrawScore } from "../lib/score-api.js";
 import { pushSessionToApi } from "../lib/api-client.js";
-import { getCollectWindow, getTargetDate } from "../lib/date-window.js";
+import { getCalendarDate, getCollectWindow, getLatestDrawScoreDate, getTargetDate, isAfterResultCutoff } from "../lib/date-window.js";
+import type { EngineBundle } from "../lib/engine-api.js";
+import { fetchEngineBundle } from "../lib/engine-api.js";
 import {
   clearSession,
+  ensureConfigSeeded,
   getForumAuth,
   getRuntimeStatus,
   getSession,
   getSettings,
   listSessionDates,
-  saveForumAuth,
-  saveSettings,
 } from "../lib/storage.js";
+import type { CollectSession } from "../types/forum.js";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** Escape HTML special chars to prevent XSS in innerHTML. */
+function esc(s: string | number | undefined | null): string {
+  if (s === null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 function badgeClass(status: string): string {
   const map: Record<string, string> = {
@@ -36,8 +57,76 @@ function authLabel(status: string): string {
   return map[status] || status;
 }
 
+function pollStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    collecting: "Đang thu thập",
+    login_failed: "Đăng nhập thất bại",
+    waiting_thread: "Chưa có topic thảo luận",
+    outside_window: "Ngoài khung giờ",
+    finalized: "Đã chốt",
+    sunday_skip: "Chủ nhật — bỏ qua",
+    rolled_over: "Đã chuyển ngày quay",
+  };
+  return map[status] || status;
+}
+
+function maskPassword(password: string): string {
+  if (!password) return "—";
+  if (password.length <= 2) return "••";
+  return `${password.slice(0, 1)}${"•".repeat(Math.min(password.length - 1, 8))}`;
+}
+
 async function send(type: string, payload: Record<string, unknown> = {}) {
   return chrome.runtime.sendMessage({ type, ...payload });
+}
+
+const POLL_TIMEOUT_MS = 45_000;
+
+async function pollNowWithTimeout(ms = POLL_TIMEOUT_MS): Promise<unknown> {
+  return Promise.race([
+    send("POLL_NOW"),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Poll timeout")), ms),
+    ),
+  ]);
+}
+
+async function syncSessionOptional(
+  session: CollectSession,
+  force: boolean,
+): Promise<boolean> {
+  try {
+    return await pushSessionToApi(session, { force });
+  } catch {
+    return false;
+  }
+}
+
+function sessionPostCount(session?: CollectSession): number {
+  return session ? Object.keys(session.posts).length : 0;
+}
+
+function thaoLuanPostCount(session?: CollectSession): number {
+  if (!session) return 0;
+  return Object.values(session.posts).filter((p) => p.forum === "thao_luan").length;
+}
+
+function needsPollForTarget(
+  target: string,
+  runtime: Awaited<ReturnType<typeof getRuntimeStatus>>,
+  session: CollectSession | undefined,
+  afterCutoff: boolean,
+): boolean {
+  if (!afterCutoff) return false;
+  if (runtime.target_date !== target) return true;
+  if (sessionPostCount(session) === 0) return true;
+  if (thaoLuanPostCount(session) === 0) return true;
+  return false;
+}
+
+function formatTargetDateLabel(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 const RECO_LOADING_STEPS = [
@@ -50,6 +139,11 @@ const RECO_LOADING_STEPS = [
 
 let recoLoadingTimer: ReturnType<typeof setInterval> | null = null;
 let recoLoading = false;
+let lastRecoTarget = "";
+let engineLoading = false;
+let scoreLoading = false;
+
+type TabName = "collect" | "reco" | "engine" | "score";
 
 function setRecoLoading(active: boolean, step?: string): void {
   recoLoading = active;
@@ -85,24 +179,158 @@ function stopRecoLoadingAnimation(): void {
   setRecoLoading(false);
 }
 
-function setTab(name: "collect" | "reco"): void {
-  const collect = name === "collect";
-  $("tab-collect").classList.toggle("active", collect);
-  $("tab-reco").classList.toggle("active", !collect);
-  $("tab-collect").setAttribute("aria-selected", String(collect));
-  $("tab-reco").setAttribute("aria-selected", String(!collect));
-  $("panel-collect").classList.toggle("hidden", !collect);
-  $("panel-collect").hidden = !collect;
-  $("panel-reco").classList.toggle("hidden", collect);
-  $("panel-reco").hidden = collect;
-  if (!collect && !recoLoading) void loadRecommendations();
+function setEngineLoading(active: boolean, step?: string): void {
+  engineLoading = active;
+  const panel = $("panel-engine");
+  const box = $("engine-loading");
+  const btn = $("btn-refresh-engine");
+  const label = btn.querySelector(".btn-label");
+
+  panel.classList.toggle("is-loading", active);
+  box.classList.toggle("hidden", !active);
+  box.hidden = !active;
+  box.setAttribute("aria-busy", String(active));
+  btn.disabled = active;
+  btn.classList.toggle("loading", active);
+  if (label) label.textContent = active ? "Đang tải…" : "Tải engine";
+  if (step) $("engine-loading-text").textContent = step;
 }
 
-const DE_PICK_TYPES = new Set(["de_cham", "de_dau", "de_tong", "btd", "btd_dau"]);
+function setTab(name: TabName): void {
+  const tabIds: Record<TabName, { tab: string; panel: string }> = {
+    collect: { tab: "tab-collect", panel: "panel-collect" },
+    reco: { tab: "tab-reco", panel: "panel-reco" },
+    engine: { tab: "tab-engine", panel: "panel-engine" },
+    score: { tab: "tab-score", panel: "panel-score" },
+  };
+
+  for (const [tab, active] of Object.entries({
+    collect: name === "collect",
+    reco: name === "reco",
+    engine: name === "engine",
+    score: name === "score",
+  }) as [TabName, boolean][]) {
+    const ids = tabIds[tab];
+    $(ids.tab).classList.toggle("active", active);
+    $(ids.tab).setAttribute("aria-selected", String(active));
+    const panel = $(ids.panel);
+    panel.classList.toggle("hidden", !active);
+    panel.hidden = !active;
+  }
+
+  if (name === "reco" && !recoLoading) void loadRecommendations();
+  if (name === "engine" && !engineLoading) void loadEngine();
+  if (name === "score" && !scoreLoading) void loadScore(false);
+}
+
+function getDrawScoreDate(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): string {
+  return getLatestDrawScoreDate(now, timeZone);
+}
+
+function formatScoreNums(pickType: string, numbers: string[]): string {
+  if (pickType === "std_de") return numbers.join(" / ");
+  return numbers.join(", ");
+}
+
+function renderScore(data: DrawScoreResponse): void {
+  $("score-target-date").textContent = formatTargetDateLabel(data.target_date);
+  $("score-de").textContent = data.draw?.de || "—";
+  $("score-db").textContent = data.draw?.db || "—";
+
+  const summary = data.summary;
+  $("score-summary").textContent = summary
+    ? `${summary.hits}/${summary.total} (${summary.hit_rate_pct}%)`
+    : "—";
+
+  const hint = $("score-cutoff-hint");
+  if (data.cutoff) {
+    hint.textContent = `Chỉ tính pick chốt trước 18:00 · cutoff ${new Date(data.cutoff).toLocaleString("vi-VN")}`;
+    hint.classList.remove("hidden");
+  }
+
+  const tbody = $("score-rows");
+  const rows = data.results || [];
+  if (!data.ok || !rows.length) {
+    const msg =
+      data.error === "not_scored"
+        ? "Chưa chấm — sau 18:31 bấm Tải kết quả hoặc Chấm lại"
+        : data.error === "no_draw"
+          ? "Chưa có KQXS — thử Chấm lại (mketqua)"
+          : "Chưa có dữ liệu đối chiếu";
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${msg}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows
+    .map((r) => {
+      const label = PICK_LABELS[r.pick_type] || r.pick_type;
+      const nums = formatScoreNums(r.pick_type, r.numbers || []);
+      // Build clickable num chips from score row data
+      const numChips = (r.numbers || []).map((n) =>
+        `<button type="button" class="pick-chip score-num-chip" data-score-num="${esc(n)}" data-score-user="${esc(r.username)}" title="${esc(r.username)} chốt ${n}">${esc(n)}</button>`
+      ).join(", ");
+      const kq = r.hit
+        ? `<span class="score-hit">TRÚNG</span>`
+        : `<span class="score-miss">trượt</span>`;
+      return `<tr class="${r.hit ? "row-hit" : ""}">
+        <td><strong>${esc(r.username)}</strong></td>
+        <td>${esc(label)}</td>
+        <td class="nums">${numChips || "—"}</td>
+        <td>${kq}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function loadScore(forceRun: boolean): Promise<void> {
+  if (scoreLoading) return;
+  scoreLoading = true;
+  const settings = await getSettings();
+  $("score-error").classList.add("hidden");
+  const btn = $("btn-refresh-score");
+  const runBtn = $("btn-run-score");
+  btn.disabled = true;
+  runBtn.disabled = true;
+
+  try {
+    let drawDate = getDrawScoreDate(new Date(), settings.timezone);
+    let data = forceRun
+      ? await runDrawScore(drawDate, settings)
+      : await fetchDrawScore(drawDate, settings);
+
+    if (!forceRun && data.error === "not_scored") {
+      const [y, m, d] = drawDate.split("-").map(Number);
+      const prev = new Date(Date.UTC(y, m - 1, d));
+      prev.setUTCDate(prev.getUTCDate() - 1);
+      const fallback = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}-${String(prev.getUTCDate()).padStart(2, "0")}`;
+      const retry = await fetchDrawScore(fallback, settings);
+      if (retry.ok) {
+        data = retry;
+        drawDate = fallback;
+      }
+    }
+
+    renderScore(data);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const err = $("score-error");
+    err.textContent = msg;
+    err.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    runBtn.disabled = false;
+    scoreLoading = false;
+  }
+}
+
+const DE_PICK_TYPES = new Set(["de_cham", "de_dau", "de_tong", "btd", "btd_dau", "std_de", "btd_de"]);
+const LOTO_PICK_TYPES = new Set(["stl", "btl", "muc_lo"]);
 
 const PICK_LABELS: Record<string, string> = {
   stl: "STL",
   btl: "BTL",
+  std_de: "STĐ",
+  btd_de: "BTĐ",
   de_dau: "Đề đầu",
   de_cham: "Chạm",
   de_tong: "Tổng",
@@ -446,6 +674,84 @@ function formatPerformance(perf?: { hits: number; total: number; rate_pct: numbe
   return `${perf.rate_pct}% (${perf.hits}/${perf.total})`;
 }
 
+function formatStlPair(nums: string[]): string {
+  if (!nums.length) return "—";
+  if (nums.length === 2) return `${nums[0]}-${nums[1]}`;
+  return nums.join(", ");
+}
+
+interface TopLotoExpertRow {
+  user: string;
+  forum?: string;
+  weight: number;
+  performance?: LiveExpertRow["performance"];
+  stl: string[];
+  btl: string[];
+}
+
+function buildTopLotoExperts(experts: LiveExpertRow[]): TopLotoExpertRow[] {
+  const byUser = new Map<string, TopLotoExpertRow>();
+
+  for (const e of experts) {
+    if (!LOTO_PICK_TYPES.has(e.pick_type)) continue;
+    let row = byUser.get(e.user);
+    if (!row) {
+      row = {
+        user: e.user,
+        forum: e.forum,
+        weight: e.weight,
+        performance: e.performance,
+        stl: [],
+        btl: [],
+      };
+      byUser.set(e.user, row);
+    }
+    if (e.weight > row.weight) row.weight = e.weight;
+    if (e.forum && !row.forum) row.forum = e.forum;
+    if (e.performance?.total && (!row.performance?.total || e.performance.rate_pct > row.performance.rate_pct)) {
+      row.performance = e.performance;
+    }
+    const nums = (e.numbers || []).map((n) => String(n).padStart(2, "0"));
+    if (e.pick_type === "stl") {
+      row.stl = nums.slice(0, 2);
+    } else {
+      for (const n of nums) {
+        if (!row.btl.includes(n)) row.btl.push(n);
+      }
+    }
+  }
+
+  return [...byUser.values()]
+    .filter((r) => r.stl.length > 0 || r.btl.length > 0)
+    .sort((a, b) => b.weight - a.weight || a.user.localeCompare(b.user))
+    .slice(0, 10);
+}
+
+function renderTopLotoExperts(experts: LiveExpertRow[]): void {
+  const rows = buildTopLotoExperts(experts);
+  const tbody = $("reco-loto-rows");
+  if (!rows.length) {
+    tbody.innerHTML = "<tr><td colspan='6' class='muted'>Chưa có cao thủ chốt lô</td></tr>";
+    return;
+  }
+  tbody.innerHTML = rows
+    .map((r, i) => {
+      const tag = fmtForumTag(r.forum);
+      const perf = formatPerformance(r.performance);
+      const stl = formatStlPair(r.stl);
+      const btl = r.btl.length ? r.btl.join(", ") : "—";
+      return `<tr data-user="${r.user}">
+        <td>${i + 1}</td>
+        <td><strong>${r.user}</strong><br><span class="muted expert-loto-perf">${perf}</span></td>
+        <td>${tag ? `<span class="forum-tag forum-tag-${tag.toLowerCase()}">${tag}</span>` : "—"}</td>
+        <td class="nums">${stl}</td>
+        <td class="nums">${btl}</td>
+        <td>${r.weight.toFixed(2)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
 function formatConsensusCham(rows: ConsensusChamRow[] | undefined): string {
   if (!rows?.length) return "—";
   return rows
@@ -465,6 +771,226 @@ function formatBaoWithVotes(
       return v && v >= 2 ? `${n}×${v}` : n;
     })
     .join(", ");
+}
+
+type PickBucket = "btl" | "bao" | "xien" | "de" | "cham";
+
+const PICK_BUCKET_LABELS: Record<PickBucket, string> = {
+  btl: "BTL lô",
+  bao: "Bao lô",
+  xien: "Xiên 2",
+  de: "Đề",
+  cham: "Chạm đề",
+};
+
+let currentPickWhoMap = new Map<string, string[]>();
+
+function normToken(bucket: PickBucket, token: string): string {
+  const t = (token || "").trim();
+  if (!t) return t;
+  if (bucket === "xien") return t; // e.g. "13-77"
+  if (bucket === "cham") return t.replace(/[^\d]/g, "").slice(0, 1); // digit
+  // btl/bao/de: normalize 1-2 digit numbers → 2 digits
+  const m = t.match(/^\d{1,2}$/);
+  if (m) return t.padStart(2, "0");
+  return t;
+}
+
+function pickBucket(pickType: string): PickBucket | null {
+  const t = pickType.toLowerCase();
+  if (t === "btl" || t.includes("btl")) return "btl";
+  if (t.includes("bao")) return "bao";
+  if (t.includes("xien")) return "xien";
+  // de_* / btd / btd_dau cũng coi là "de" cho tooltip basic
+  if (t.includes("de") || t.includes("btd")) return "de";
+  if (t.includes("cham")) return "cham";
+  return null;
+}
+
+function buildWhoMap(data: RecommendationsResponse): Map<string, string[]> {
+  const map = new Map<string, Set<string>>();
+
+  const add = (bucket: PickBucket, token: string, user: string) => {
+    const key = `${bucket}:${normToken(bucket, token)}`;
+    const set = map.get(key) || new Set<string>();
+    set.add(user);
+    map.set(key, set);
+  };
+
+  for (const e of data.live_experts || []) {
+    const b = pickBucket(e.pick_type);
+    if (!b) continue;
+    for (const raw of e.numbers || []) {
+      const token = String(raw).trim();
+      if (!token) continue;
+      add(b, token, e.user);
+    }
+  }
+
+  // Consensus có users rõ cho loto_top10 → dùng bổ sung cho tooltip
+  for (const row of data.consensus?.loto_top10 || []) {
+    for (const u of row.users || []) {
+      add("btl", row.loto, u);
+      add("bao", row.loto, u);
+    }
+  }
+
+  // Chạm leaders
+  for (const c of data.de_cham_leaders || []) {
+    for (const raw of c.cham || []) add("cham", String(raw).trim(), c.user);
+  }
+  for (const c of data.consensus?.de_cham || []) {
+    for (const u of c.users || []) add("cham", String(c.cham).trim(), u);
+  }
+
+  const out = new Map<string, string[]>();
+  for (const [k, v] of map.entries()) out.set(k, [...v].sort((a, b) => a.localeCompare(b)));
+  return out;
+}
+
+function renderPickChip(
+  bucket: PickBucket,
+  token: string,
+  label: string,
+  who: Map<string, string[]>,
+  extraClass = "",
+): string {
+  const norm = normToken(bucket, token);
+  const users = who.get(`${bucket}:${norm}`) || [];
+  const hint = users.length ? users.join(", ") : "Chưa rõ ai chốt";
+  const hasWho = users.length > 0 ? "has-who" : "";
+  const cls = ["pick-chip", hasWho, extraClass].filter(Boolean).join(" ");
+  return `<button type="button" class="${cls}" data-bucket="${bucket}" data-token="${norm}" data-label="${label.replace(/"/g, "&quot;")}" title="${hint.replace(/"/g, "&quot;")}">${label}</button>`;
+}
+
+function renderTokensWithWho(
+  bucket: PickBucket,
+  tokens: string[],
+  who: Map<string, string[]>,
+  opts: { diff?: (token: string) => string | null; label?: (token: string) => string } = {},
+): string {
+  if (!tokens.length) return "—";
+  return tokens
+    .map((t) => {
+      const token = String(t).trim();
+      const label = opts.label ? opts.label(token) : token;
+      const diffCls = opts.diff?.(token) ? "nums-diff" : "";
+      return renderPickChip(bucket, token, label, who, diffCls);
+    })
+    .join(", ");
+}
+
+function renderXienWithWho(tokens: string[], who: Map<string, string[]>): string {
+  if (!tokens.length) return "—";
+  return tokens
+    .map((pair) => {
+      const token = String(pair).trim();
+      return renderPickChip("xien", token, token, who);
+    })
+    .join(" / ");
+}
+
+function renderChamWithWho(
+  who: Map<string, string[]>,
+  digits: string[],
+  labelFn?: (d: string) => string,
+): string {
+  if (!digits.length) return "—";
+  return digits
+    .map((d) => {
+      const token = String(d).trim();
+      const label = labelFn ? labelFn(token) : token;
+      return renderPickChip("cham", token, label, who);
+    })
+    .join(", ");
+}
+
+function showPickWhoPopup(bucket: PickBucket, token: string, label: string, overrideUsers?: string[]): void {
+  const users = overrideUsers || currentPickWhoMap.get(`${bucket}:${token}`) || [];
+  const popup = $("pick-who-popup");
+  $("pick-who-title").textContent = label || token;
+  $("pick-who-sub").textContent = PICK_BUCKET_LABELS[bucket] || bucket;
+  const list = $("pick-who-list");
+  if (!users.length) {
+    list.innerHTML = "<li class='muted'>Chưa rõ ai chốt</li>";
+  } else {
+    list.innerHTML = users.map((u) => `<li><strong>${u}</strong></li>`).join("");
+  }
+  popup.classList.remove("hidden");
+  popup.hidden = false;
+}
+
+function closePickWhoPopup(): void {
+  const popup = $("pick-who-popup");
+  popup.classList.add("hidden");
+  popup.hidden = true;
+}
+
+function setupPickWhoPopup(): void {
+  const popup = $("pick-who-popup");
+  popup.querySelector(".pick-who-backdrop")?.addEventListener("click", closePickWhoPopup);
+  popup.querySelector(".pick-who-close")?.addEventListener("click", closePickWhoPopup);
+
+  const panels = [$("panel-reco"), $("panel-score")];
+  for (const panel of panels) {
+    panel.addEventListener("click", (ev) => {
+      const chip = (ev.target as HTMLElement).closest(".pick-chip") as HTMLButtonElement | null;
+      if (!chip) return;
+      // Score tab chip — khác format, xử lý riêng
+      const scoreNum = chip.dataset.scoreNum;
+      if (scoreNum) {
+        const user = chip.dataset.scoreUser || "";
+        showPickWhoPopup("de", scoreNum, scoreNum, [user]);
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      const bucket = chip.dataset.bucket as PickBucket;
+      const token = chip.dataset.token || "";
+      const label = chip.dataset.label || token;
+      if (!bucket || !token) return;
+      showPickWhoPopup(bucket, token, label);
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+  }
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !popup.hidden) closePickWhoPopup();
+  });
+}
+
+function setupRecoPanelCollapses(): void {
+  const specs: Array<{ toggleId: string; targetId: string }> = [
+    { toggleId: "toggle-reco-de-by-expert", targetId: "reco-de-by-expert" },
+    { toggleId: "toggle-reco-dan-board", targetId: "reco-dan-board" },
+    { toggleId: "toggle-reco-dan-filter", targetId: "reco-dan-filter" },
+  ];
+
+  for (const { toggleId, targetId } of specs) {
+    const btn = $(toggleId) as HTMLButtonElement;
+    const target = $(targetId) as HTMLElement;
+    if (!btn || !target) continue;
+
+    const sync = (): void => {
+      const hidden = target.hidden || target.classList.contains("hidden");
+      target.hidden = hidden;
+      target.classList.toggle("hidden", hidden);
+      btn.textContent = hidden ? "▸" : "▾";
+      btn.setAttribute("aria-expanded", String(!hidden));
+    };
+
+    // Normalize initial state.
+    sync();
+
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      target.hidden = !target.hidden;
+      target.classList.toggle("hidden", target.hidden);
+      sync();
+    });
+  }
 }
 
 function buildVoteMap(rows: { loto: string; score: number; votes?: number }[]): Map<string, number> {
@@ -494,31 +1020,94 @@ function renderConsensusHint(stats?: ConsensusStats): void {
   }
 }
 
-function renderRecommendations(data: RecommendationsResponse): void {
+/**
+ * Clear all recommendation pick fields — used when API returns data for wrong target_date
+ */
+function clearRecoPicks(): void {
+  $("reco-btl").textContent = "—";
+  $("reco-bao").textContent = "—";
+  $("reco-xien").textContent = "—";
+  $("reco-de").textContent = "—";
+  $("reco-cham").textContent = "—";
+  $("reco-consensus-btl").textContent = "—";
+  $("reco-consensus-bao").textContent = "—";
+  $("reco-consensus-xien").textContent = "—";
+  $("reco-consensus-de").textContent = "—";
+  $("reco-consensus-cham").textContent = "—";
+  $("reco-consensus-hint").classList.add("hidden");
+  $("reco-consensus-hint").hidden = true;
+  const tbody = $("reco-experts-rows");
+  tbody.innerHTML = "<tr><td colspan='7' class='muted'>Chưa có dữ liệu — API trả ngày cũ, cần poll forum cho ngày mới</td></tr>";
+}
+
+function renderRecommendations(
+  data: RecommendationsResponse,
+  expectedTarget: string,
+  afterCutoff: boolean,
+): void {
+  $("reco-target-date").textContent = formatTargetDateLabel(data.target_date || expectedTarget);
   $("reco-expert-count").textContent = String(data.expert_count ?? data.live_experts.length);
+
+  const hint = $("reco-freshness-hint");
+  if (data.target_date && data.target_date !== expectedTarget) {
+    hint.textContent = `API trả ngày ${formatTargetDateLabel(data.target_date)} — khác ngày quay hiện tại ${formatTargetDateLabel(expectedTarget)}. Bấm Tải đề xuất lại.`;
+    hint.classList.remove("hidden", "ok");
+    hint.hidden = false;
+  } else if (afterCutoff) {
+    hint.textContent = `Đề xuất cho ngày quay ${formatTargetDateLabel(expectedTarget)} — sau 18:30 dùng pick mới (thảo luận + chăn nuôi).`;
+    hint.classList.remove("hidden");
+    hint.classList.add("ok");
+    hint.hidden = false;
+  } else {
+    hint.classList.add("hidden");
+    hint.hidden = true;
+  }
 
   const voteMap = buildVoteMap(data.consensus?.loto_top10 || []);
   const expertBao = data.picks.bao_lo_9;
   const consensusBao = data.consensus?.picks?.bao_lo_9 || [];
   const consensusSet = new Set(consensusBao);
+  const who = buildWhoMap(data);
+  currentPickWhoMap = who;
 
-  $("reco-btl").textContent = data.picks.btl_lo || "—";
-  $("reco-bao").textContent = expertBao.join(", ") || "—";
-  $("reco-xien").textContent = data.picks.xien_2.join(" / ") || "—";
-  $("reco-de").textContent = data.picks.de_top_4.join(", ") || "—";
+  const btl = data.picks.btl_lo ? [data.picks.btl_lo] : [];
+  $("reco-btl").innerHTML = renderTokensWithWho("btl", btl, who);
+  $("reco-bao").innerHTML = renderTokensWithWho("bao", expertBao, who);
 
-  const cham = data.de_cham_leaders || [];
-  $("reco-cham").textContent = cham.length
-    ? cham.map((c) => `${c.user}: ${c.cham.join(",")}`).join(" · ")
-    : "—";
+  $("reco-xien").innerHTML = renderXienWithWho(data.picks.xien_2 || [], who);
+
+  $("reco-de").innerHTML = renderTokensWithWho("de", data.picks.de_top_4, who);
+
+  const chamDigits = [
+    ...new Set((data.de_cham_leaders || []).flatMap((c) => c.cham.map((d) => String(d).trim()))),
+  ];
+  $("reco-cham").innerHTML = renderChamWithWho(who, chamDigits);
 
   const consensus = data.consensus;
   if (consensus?.picks) {
-    $("reco-consensus-btl").textContent = consensus.picks.btl_lo || "—";
-    $("reco-consensus-bao").textContent = formatBaoWithVotes(consensusBao, voteMap);
-    $("reco-consensus-xien").textContent = consensus.picks.xien_2.join(" / ") || "—";
-    $("reco-consensus-de").textContent = consensus.picks.de_top_4.join(", ") || "—";
-    $("reco-consensus-cham").textContent = formatConsensusCham(consensus.de_cham);
+    const cbtl = consensus.picks.btl_lo ? [consensus.picks.btl_lo] : [];
+    $("reco-consensus-btl").innerHTML = renderTokensWithWho("btl", cbtl, who);
+    $("reco-consensus-bao").innerHTML = renderTokensWithWho("bao", consensusBao, who, {
+      label: (n) => {
+        const v = voteMap.get(n);
+        return v && v >= 2 ? `${n}×${v}` : n;
+      },
+    });
+
+    const cxien = consensus.picks.xien_2 || [];
+    $("reco-consensus-xien").innerHTML = renderXienWithWho(cxien, who);
+
+    $("reco-consensus-de").innerHTML = renderTokensWithWho("de", consensus.picks.de_top_4, who);
+    const chamDigits = (consensus.de_cham || []).map((c) => String(c.cham).trim());
+    $("reco-consensus-cham").innerHTML = renderChamWithWho(
+      who,
+      chamDigits,
+      (d) => {
+        const row = (consensus.de_cham || []).find((c) => String(c.cham) === d);
+        const votes = row?.votes ?? 0;
+        return votes >= 2 ? `${d}×${votes}` : d;
+      },
+    );
     renderConsensusHint(consensus.stats);
   } else {
     $("reco-consensus-btl").textContent = "—";
@@ -532,22 +1121,16 @@ function renderRecommendations(data: RecommendationsResponse): void {
 
   // Đánh dấu số chỉ có ở 1 panel
   if (consensusBao.length && expertBao.join() !== consensusBao.join()) {
-    $("reco-bao").innerHTML = expertBao
-      .map((n) =>
-        consensusSet.has(n)
-          ? `<span>${n}</span>`
-          : `<span class="nums-diff" title="Chỉ panel trọng số">${n}</span>`,
-      )
-      .join(", ");
-    $("reco-consensus-bao").innerHTML = consensusBao
-      .map((n) => {
+    $("reco-bao").innerHTML = renderTokensWithWho("bao", expertBao, who, {
+      diff: (n) => (consensusSet.has(n) ? null : "Chỉ panel trọng số"),
+    });
+    $("reco-consensus-bao").innerHTML = renderTokensWithWho("bao", consensusBao, who, {
+      diff: (n) => (expertBao.includes(n) ? null : "Chỉ panel đồng thuận"),
+      label: (n) => {
         const v = voteMap.get(n);
-        const label = v && v >= 2 ? `${n}×${v}` : n;
-        return expertBao.includes(n)
-          ? `<span>${label}</span>`
-          : `<span class="nums-diff" title="Chỉ panel đồng thuận">${label}</span>`;
-      })
-      .join(", ");
+        return v && v >= 2 ? `${n}×${v}` : n;
+      },
+    });
   }
 
   renderDeByExpert(data);
@@ -555,7 +1138,7 @@ function renderRecommendations(data: RecommendationsResponse): void {
 
   const tbody = $("reco-experts-rows");
   if (!data.live_experts.length) {
-    tbody.innerHTML = "<tr><td colspan='6' class='muted'>Chưa có cao thủ chốt (poll + sync API)</td></tr>";
+    tbody.innerHTML = "<tr><td colspan='7' class='muted'>Chưa có cao thủ chốt (poll + sync API)</td></tr>";
   } else {
     tbody.innerHTML = data.live_experts
       .slice(0, 20)
@@ -563,11 +1146,19 @@ function renderRecommendations(data: RecommendationsResponse): void {
         (e) => {
           const tag = fmtForumTag(e.forum);
           const label = PICK_LABELS[e.pick_type] || e.pick_type;
+          const nums =
+            e.pick_type === "std_de"
+              ? (e.numbers || []).join(" / ")
+              : (e.numbers || []).join(", ");
+          const topic = e.thread_url
+            ? `<a class="muted" href="${e.thread_url}" target="_blank" rel="noreferrer">threads/${(e.thread_id || "").slice(0, 18)}${(e.thread_id || "").length > 18 ? "…" : ""}</a>`
+            : "—";
           return `<tr data-user="${e.user}" data-forum="${e.forum || ""}">
             <td><strong>${e.user}</strong></td>
             <td>${tag ? `<span class="forum-tag forum-tag-${tag.toLowerCase()}">${tag}</span>` : "—"}</td>
+            <td>${topic}</td>
             <td>${label}</td>
-            <td class="nums">${e.numbers.join(", ")}</td>
+            <td class="nums">${nums}</td>
             <td>${formatPerformance(e.performance)}</td>
             <td>${e.weight}</td>
           </tr>`;
@@ -576,18 +1167,7 @@ function renderRecommendations(data: RecommendationsResponse): void {
       .join("");
   }
 
-  const rows = data.forum_loto_top10 || [];
-  const lotoBody = $("reco-loto-rows");
-  if (!rows.length) {
-    lotoBody.innerHTML = "<tr><td colspan='4' class='muted'>Chưa có lô từ cao thủ</td></tr>";
-  } else {
-    lotoBody.innerHTML = rows
-      .map(
-        (r, i) =>
-          `<tr><td>${i + 1}</td><td><strong>${r.loto}</strong></td><td>${r.score.toFixed(2)}</td><td>${r.users.join(", ") || "—"}</td></tr>`,
-      )
-      .join("");
-  }
+  renderTopLotoExperts(data.live_experts || []);
 
   const consensusRows = consensus?.loto_top10 || [];
   const consensusBody = $("reco-consensus-loto-rows");
@@ -606,32 +1186,217 @@ function renderRecommendations(data: RecommendationsResponse): void {
   $("reco-error").classList.add("hidden");
 }
 
-async function loadRecommendations(): Promise<void> {
+function renderCandidateTable(
+  tbodyId: string,
+  rows: { loto: string; score: number; filters_matched: number }[],
+  emptyMsg: string,
+): void {
+  const tbody = $(tbodyId);
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${emptyMsg}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows
+    .map(
+      (r, i) =>
+        `<tr title="${(r as { reasons?: string[] }).reasons?.[0] || ""}">
+          <td>${i + 1}</td>
+          <td><strong>${r.loto}</strong></td>
+          <td>${r.score.toFixed(2)}</td>
+          <td>${r.filters_matched}</td>
+        </tr>`,
+    )
+    .join("");
+}
+
+function pickLoto(item: { loto: string } | string): string {
+  return typeof item === "string" ? item : item.loto;
+}
+
+function daysBetweenIso(a: string, b: string): number {
+  const ta = Date.parse(`${a}T12:00:00Z`);
+  const tb = Date.parse(`${b}T12:00:00Z`);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+  return Math.round(Math.abs(tb - ta) / 86_400_000);
+}
+
+function renderEngine(data: EngineBundle, settings: Awaited<ReturnType<typeof getSettings>>): void {
+  const loto = data.stats_loto;
+  const de = data.stats_de;
+  const ix = data.intersection;
+  const asOf = data.as_of_date || loto.as_of_date || ix.as_of_date || "—";
+
+  $("engine-target-date").textContent = data.target_date;
+  $("engine-as-of").textContent = asOf;
+  $("engine-db-draws").textContent = data.analytics?.mb_draws
+    ? `${data.analytics.mb_draws} (${data.analytics.oldest || "?"} → ${data.analytics.newest || "?"})`
+    : "—";
+  $("engine-api-base").textContent = data.api_base.replace(/^https?:\/\//, "");
+
+  const stale = $("engine-stale-warn");
+  const calendarToday = getCalendarDate(new Date(), settings.timezone);
+  const newest = data.analytics?.newest || asOf;
+  const gap = newest !== "—" ? daysBetweenIso(newest, calendarToday) : 0;
+  if (gap > 1) {
+    stale.textContent =
+      `KQXS trong DB mới đến ${formatTargetDateLabel(newest)} (thiếu ${gap} ngày). ` +
+      "Chạy import KQXS trên server rồi bấm Tải engine lại.";
+    stale.classList.remove("hidden");
+  } else {
+    stale.classList.add("hidden");
+  }
+
+  const disclaimer = $("engine-disclaimer");
+  const disc = loto.disclaimer || de.disclaimer;
+  if (disc) {
+    disclaimer.textContent = disc;
+    disclaimer.classList.remove("hidden");
+  } else {
+    disclaimer.classList.add("hidden");
+  }
+
+  renderCandidateTable("engine-loto-rows", loto.candidates || [], "Chưa có candidate lô");
+  renderCandidateTable("engine-de-rows", de.candidates || [], "Chưa có candidate đề");
+
+  const ctx = loto.context as { weekday_vi?: string; yesterday_db?: string } | undefined;
+  const yDb = ix.yesterday_db || ctx?.yesterday_db || "—";
+  $("engine-intersection-meta").textContent =
+    `ĐB hôm qua: ${yDb}` +
+    (ctx?.weekday_vi ? ` · ${ctx.weekday_vi}` : "") +
+    (ix.strategy ? ` · ${ix.strategy}` : "");
+
+  const cfTop = (ix.cf_candidates || []).slice(0, 8).map((c) => c.loto).join(", ");
+  $("engine-cf-top").textContent = cfTop || "—";
+
+  const rbkTop = (ix.rbk_candidates || []).slice(0, 8).map(pickLoto).join(", ");
+  $("engine-rbk-top").textContent = rbkTop || "—";
+
+  const finals = (ix.final_picks?.length ? ix.final_picks : ix.intersection) || [];
+  $("engine-final-picks").textContent =
+    finals.length ? finals.map(pickLoto).join(", ") : "— (chưa giao)";
+
+  const predBody = $("engine-predict-rows");
+  const preds = data.predictions?.predictions || [];
+  if (!preds.length) {
+    predBody.innerHTML =
+      "<tr><td colspan='3' class='muted'>Prediction engine không khả dụng</td></tr>";
+  } else {
+    predBody.innerHTML = preds
+      .map(
+        (p) =>
+          `<tr><td>${p.rank}</td><td><strong>${p.value}</strong></td><td>${p.score.toFixed(3)}</td></tr>`,
+      )
+      .join("");
+  }
+
+  $("engine-error").classList.add("hidden");
+}
+
+async function loadEngine(): Promise<void> {
+  if (engineLoading) return;
+
+  const settings = await getSettings();
+
+  $("engine-error").classList.add("hidden");
+  setEngineLoading(true, "Kết nối Stats Engine…");
+
+  try {
+    const data = await fetchEngineBundle(settings);
+    renderEngine(data, settings);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const err = $("engine-error");
+    err.textContent = msg;
+    err.classList.remove("hidden");
+  } finally {
+    setEngineLoading(false);
+  }
+}
+
+async function loadRecommendations(options: { forcePoll?: boolean } = {}): Promise<void> {
   if (recoLoading) return;
 
   const settings = await getSettings();
-  const runtime = await getRuntimeStatus();
-  const target =
-    runtime.target_date || getTargetDate(new Date(), settings.timezone);
+  const now = new Date();
+  const target = getTargetDate(now, settings.timezone);
+  const afterCutoff = isAfterResultCutoff(now, settings.timezone);
+  lastRecoTarget = target;
 
   $("reco-error").classList.add("hidden");
   startRecoLoadingAnimation();
 
   try {
-    const session = await getSession(target);
-    if (session) {
-      $("reco-loading-text").textContent = "Đang sync session lên API…";
-      await pushSessionToApi(session, { force: true });
+    const runtime = await getRuntimeStatus();
+    const rolledOver = Boolean(runtime.target_date && runtime.target_date !== target);
+    let session = await getSession(target);
+    const shouldPoll =
+      options.forcePoll || rolledOver || needsPollForTarget(target, runtime, session, afterCutoff);
+
+    $("reco-loading-text").textContent = "Lấy pick cao thủ…";
+    let data = await fetchRecommendationsAndSyncUrl(target, settings);
+    const dataIsFresh = data.target_date === target;
+    const hasApiData = Boolean(data.has_forum_session || data.expert_count > 0);
+
+    // Only render if API returned data for the correct target date
+    if (dataIsFresh && hasApiData) {
+      renderRecommendations(data, target, afterCutoff);
+    } else if (!dataIsFresh) {
+      // API trả data cũ — clear UI thay vì render data sai ngày
+      clearRecoPicks();
+      const hint = $("reco-freshness-hint");
+      hint.textContent = `API đang trả dữ liệu ngày ${formatTargetDateLabel(data.target_date)} — cần poll forum cho ngày mới ${formatTargetDateLabel(target)}.`;
+      hint.classList.remove("hidden", "ok");
+      hint.hidden = false;
     }
 
-    const data = await fetchRecommendationsAndSyncUrl(target, settings);
-    if (!session && !data.has_forum_session && data.expert_count === 0) {
+    if (shouldPoll) {
+      $("reco-loading-text").textContent = "Đang poll forum…";
+      try {
+        await pollNowWithTimeout();
+        session = await getSession(target);
+      } catch {
+        if (!hasApiData && dataIsFresh) {
+          const hint = $("reco-freshness-hint");
+          hint.textContent =
+            "Poll forum chậm hoặc lỗi — thử Poll ngay ở tab Thu thập, rồi Tải đề xuất lại.";
+          hint.classList.remove("hidden", "ok");
+          hint.hidden = false;
+        }
+      }
+    }
+
+    if (session && (shouldPoll || options.forcePoll)) {
+      $("reco-loading-text").textContent = "Đang sync session lên API…";
+      await syncSessionOptional(session, true);
+      data = await fetchRecommendationsAndSyncUrl(target, settings);
+    }
+
+    // Re-check after poll+sync
+    const dataIsFresh2 = data.target_date === target;
+    if (dataIsFresh2 && (data.has_forum_session || data.expert_count > 0)) {
+      renderRecommendations(data, target, afterCutoff);
+    } else if (!dataIsFresh2) {
+      // Still no fresh data — show clear message, không render data cũ
+      clearRecoPicks();
+      throw new Error(
+        `Chưa có dữ liệu cho ngày ${formatTargetDateLabel(target)} — sau 18:30 cao thủ chốt đề mới, poll forum trước.`,
+      );
+    }
+
+    if (!data.has_forum_session && data.expert_count === 0) {
+      // Only throw if data is for correct target (stale data already handled above)
       throw new Error(
         "Chưa có dữ liệu cao thủ — poll forum trước (tab Thu thập), rồi bấm Tải đề xuất",
       );
     }
-    $("reco-loading-text").textContent = "Hoàn tất!";
-    renderRecommendations(data);
+
+    // Check if API returned data for a different target date (after re-fetch)
+    if (data.target_date && data.target_date !== target) {
+      const hint = $("reco-freshness-hint");
+      hint.textContent = `API trả ngày ${formatTargetDateLabel(data.target_date)} — khác ngày quay hiện tại ${formatTargetDateLabel(target)}. Bấm Tải đề xuất lại.`;
+      hint.classList.remove("hidden", "ok");
+      hint.hidden = false;
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const err = $("reco-error");
@@ -646,15 +1411,19 @@ async function refreshUi(): Promise<void> {
   const settings = await getSettings();
   const runtime = await getRuntimeStatus();
   const auth = await getForumAuth();
-  const target = runtime.target_date || getTargetDate(new Date(), settings.timezone);
+  const now = new Date();
+  const target = getTargetDate(now, settings.timezone);
   const { window_start, window_end } = getCollectWindow(target, settings.timezone);
+  const afterCutoff = isAfterResultCutoff(now, settings.timezone);
 
   const badge = $("status-badge");
   badge.textContent = runtime.collect_status;
   badge.className = `badge ${badgeClass(runtime.collect_status)}`;
 
   $("target-date").textContent = target;
-  $("window-range").textContent = `${window_start} → ${window_end}`;
+  $("window-range").textContent = afterCutoff
+    ? `${window_start} → ${window_end} · sau 18:30 → ngày quay mới`
+    : `${window_start} → ${window_end}`;
   $("post-count").textContent = String(runtime.post_count);
   $("new-posts").textContent = String(runtime.new_posts_last_poll);
   $("last-poll").textContent = runtime.last_poll_at
@@ -662,16 +1431,27 @@ async function refreshUi(): Promise<void> {
     : "—";
   $("last-poll-status").textContent = runtime.last_poll_status || "—";
 
-  $("auth-status-short").textContent = authLabel(runtime.auth_status);
+  $("auth-status-short").textContent =
+    runtime.auth_status === "logged_in"
+      ? `${authLabel(runtime.auth_status)} · ${auth.username || "—"}`
+      : authLabel(runtime.auth_status);
   const authCard = $("auth-card");
   const loggedIn = runtime.auth_status === "logged_in";
   authCard.classList.toggle("logged-in", loggedIn);
-  $("auth-logged-hint").classList.toggle("hidden", !loggedIn);
-  ($("auth-user") as HTMLInputElement).value = auth.username;
-  ($("auth-pass") as HTMLInputElement).value = auth.password;
-  ($("api-url") as HTMLInputElement).value = settings.api_base_url;
-  ($("auto-sync") as HTMLInputElement).checked = settings.auto_sync;
-  ($("poll-active") as HTMLInputElement).value = String(settings.poll_interval_active_min);
+  const loginUrl = auth.login_url || "https://forumketqua.net/login/";
+  const hint = $("auth-logged-hint");
+  if (loggedIn) {
+    hint.textContent = `Đã đăng nhập: ${auth.username || "—"} · ${loginUrl}`;
+    hint.classList.remove("hidden");
+  } else {
+    hint.classList.add("hidden");
+  }
+  $("cfg-login-url").textContent = loginUrl;
+  $("cfg-username").textContent = auth.username || "—";
+  $("cfg-password").textContent = maskPassword(auth.password);
+  $("cfg-api-url").textContent = settings.api_base_url;
+  $("cfg-auto-sync").textContent = settings.auto_sync ? "Bật" : "Tắt";
+  $("cfg-poll-active").textContent = `${settings.poll_interval_active_min} phút`;
 
   const err = $("error");
   if (runtime.last_error) {
@@ -680,20 +1460,44 @@ async function refreshUi(): Promise<void> {
   } else {
     err.classList.add("hidden");
   }
+
+  if ($("tab-reco").classList.contains("active") && target !== lastRecoTarget && !recoLoading) {
+    void loadRecommendations();
+  }
 }
 
 $("tab-collect").addEventListener("click", () => setTab("collect"));
 $("tab-reco").addEventListener("click", () => setTab("reco"));
-$("btn-refresh-reco").addEventListener("click", () => loadRecommendations());
+$("tab-engine").addEventListener("click", () => setTab("engine"));
+$("tab-score").addEventListener("click", () => setTab("score"));
+$("btn-refresh-reco").addEventListener("click", () => loadRecommendations({ forcePoll: true }));
+$("btn-refresh-engine").addEventListener("click", () => loadEngine());
+$("btn-refresh-score").addEventListener("click", () => loadScore(false));
+$("btn-run-score").addEventListener("click", () => loadScore(true));
 
 setupDanCopyHandlers();
 setupDeJumpHandlers();
+setupPickWhoPopup();
+setupRecoPanelCollapses();
 
 $("btn-poll").addEventListener("click", async () => {
-  $("btn-poll").textContent = "Đang poll…";
-  await send("POLL_NOW");
+  const btn = $("btn-poll");
+  btn.textContent = "Đang poll…";
+  try {
+    const result = (await send("POLL_NOW")) as { status?: string; added?: number; error?: string };
+    if (result?.error) {
+      $("last-poll-status").textContent = result.error;
+    } else if (result?.status) {
+      const label = pollStatusLabel(result.status);
+      const extra = result.added ? ` (+${result.added})` : "";
+      $("last-poll-status").textContent = `${label}${extra}`;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    $("last-poll-status").textContent = msg;
+  }
   await refreshUi();
-  $("btn-poll").textContent = "Poll ngay";
+  btn.textContent = "Poll ngay";
 });
 
 $("btn-login").addEventListener("click", async () => {
@@ -701,20 +1505,6 @@ $("btn-login").addEventListener("click", async () => {
   await send("LOGIN");
   await refreshUi();
   $("btn-login").textContent = "Đăng nhập lại";
-});
-
-$("btn-save-auth").addEventListener("click", async () => {
-  await saveForumAuth({
-    username: ($("auth-user") as HTMLInputElement).value.trim(),
-    password: ($("auth-pass") as HTMLInputElement).value,
-  });
-  await saveSettings({
-    api_base_url: ($("api-url") as HTMLInputElement).value.trim(),
-    auto_sync: ($("auto-sync") as HTMLInputElement).checked,
-    poll_interval_active_min: Number(($("poll-active") as HTMLInputElement).value) || 5,
-  });
-  await send("SETUP_ALARMS");
-  await refreshUi();
 });
 
 $("btn-export").addEventListener("click", async () => {
@@ -748,22 +1538,32 @@ const settingsPanel = $("settings-panel");
 const toggleSettingsBtn = $("btn-toggle-settings");
 
 function setSettingsOpen(open: boolean): void {
-  settingsPanel.classList.toggle("hidden", !open);
-  settingsPanel.hidden = !open;
+  settingsPanel.classList.toggle("collapsed", !open);
   toggleSettingsBtn.setAttribute("aria-expanded", String(open));
 }
 
 toggleSettingsBtn.addEventListener("click", () => {
-  setSettingsOpen(settingsPanel.hidden);
+  setSettingsOpen(settingsPanel.classList.contains("collapsed"));
 });
 
-async function maybeOpenSettingsForAuth(): Promise<void> {
-  const runtime = await getRuntimeStatus();
-  if (runtime.auth_status === "not_logged_in" || runtime.auth_status === "error") {
-    setSettingsOpen(true);
-  }
+async function initPopup(): Promise<void> {
+  await ensureConfigSeeded();
+  setSettingsOpen(true);
+  await refreshUi();
+
+  // Auto-expand popup to full content height (override Chrome's default ~600px max-height limit)
+  // Chrome extension popup has a built-in max-height ~600px that cannot be overridden by CSS.
+  // Dynamically setting body.minHeight forces Chrome to expand the popup window.
+  requestAnimationFrame(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const totalHeight = Math.max(html.scrollHeight, body.scrollHeight);
+    if (totalHeight > 600) {
+      body.style.minHeight = `${totalHeight}px`;
+      html.style.height = `${totalHeight}px`;
+    }
+  });
 }
 
-void maybeOpenSettingsForAuth();
-refreshUi();
+void initPopup();
 setInterval(refreshUi, 5000);

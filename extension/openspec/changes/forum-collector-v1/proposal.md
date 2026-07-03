@@ -42,7 +42,7 @@ Ví dụ: muốn collect cho **01/07/2026** → poll từ **30/06 18:30** đến
 - Incremental poll 3 sub-forum trong cửa sổ collect
 - Parse posts: user, timestamp, STL, BTL, chạm/tổng/đầu đề, dàn đề, mức lô
 - Lưu local (chrome.storage) + export JSON + POST full `CollectSession` tới API
-- Popup UI: tab **Thu thập** (status, poll, export) + tab **Đề xuất** (forum-only picks từ API)
+- Popup UI: tab **Thu thập** | **Đề xuất** | **Engine** | **Kết quả**
 
 **Ngoài scope v1:**
 - Collect sub-forum "Soi cầu XSMB"

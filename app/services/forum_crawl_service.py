@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -14,15 +15,24 @@ TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 COLLECT_START = (18, 30)
 COLLECT_END = (18, 0)
 
-JUNE_2026_THREADS = {
-    "stl_k2n": "nuoi-song-thu-lo-khung-2-ngay-thang-6-2026.101198",
-    "btl_k3n": "topic-chan-nuoi-xsmb-btl-k3n-thang-6-2026.101208",
-    "btl_k5n": "topic-chan-nuoi-xsmb-btl-k5n-thang-6-2026.101183",
-    "dan_40s": "chan-dan-dac-biet-xsmb-40s-khung-4-thang-6-2026.101212",
-    "dan_64s": "dan-dac-biet-xsmb-64s-thang-6-2026.101209",
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cache / fallback for monthly thread slugs (channel nuôi khung)
+# When infer_monthly_thread_slugs() finds nothing, these provide defaults.
+# ---------------------------------------------------------------------------
+CACHED_MONTHLY_THREADS: dict[str, dict[str, str]] = {
+    "2026-06": {
+        "stl_k2n": "nuoi-song-thu-lo-khung-2-ngay-thang-6-2026.101198",
+        "btl_k3n": "topic-chan-nuoi-xsmb-btl-k3n-thang-6-2026.101208",
+        "btl_k5n": "topic-chan-nuoi-xsmb-btl-k5n-thang-6-2026.101183",
+        "dan_40s": "chan-dan-dac-biet-xsmb-40s-khung-4-thang-6-2026.101212",
+        "dan_64s": "dan-dac-biet-xsmb-64s-thang-6-2026.101209",
+    },
 }
 
-KNOWN_DAILY_THAO_LUAN = {
+# Cache / fallback for daily thao luan slugs
+CACHED_DAILY_THAO_LUAN: dict[str, str] = {
     "2026-06-22": "thao-luan-du-doan-xsmb-thu-2-ngay-22-6-2026.101326",
     "2026-06-23": "thao-luan-du-doan-xsmb-thu-3-ngay-23-6-2026.101331",
     "2026-06-24": "thao-luan-du-doan-xsmb-thu-4-ngay-24-6-2026.101336",
@@ -30,6 +40,18 @@ KNOWN_DAILY_THAO_LUAN = {
     "2026-06-26": "thao-luan-du-doan-xsmb-thu-6-ngay-26-6-2026.101347",
     "2026-06-27": "thao-luan-du-doan-xsmb-thu-7-ngay-27-6-2026.101352",
 }
+
+# Pattern templates for monthly thread titles — used to match on listing pages
+_MONTHLY_PATTERNS: dict[str, str] = {
+    "stl_k2n": r"nuôi.sống.thủ.lô.khung.2.ngày.tháng.{month}.{year}",
+    "btl_k3n": r"chan.nuoi.xsmb.btl.k3n.tháng.{month}.{year}",
+    "btl_k5n": r"chan.nuoi.xsmb.btl.k5n.tháng.{month}.{year}",
+    "dan_40s": r"chan.dàn.đặc.biệt.xsmb.40s.khung.4.tháng.{month}.{year}",
+    "dan_64s": r"dàn.đặc.biệt.xsmb.64s.tháng.{month}.{year}",
+}
+
+# Number of listing pages to scan when discovering slugs
+_LISTING_PAGES = 3
 
 
 @dataclass
@@ -53,6 +75,7 @@ def fetch_html(url: str) -> str:
         with urlopen(req, timeout=20) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except Exception:
+        logger.exception("fetch_page failed for %s", url)
         return ""
 
 
@@ -62,12 +85,28 @@ def strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def latest_day_section(text: str) -> str:
+    # Support both:
+    # - "Ngày 02.07.2026"
+    # - "2/7" or "02/07/2026" at line start (common shorthand)
+    matches = []
+    matches.extend(list(re.finditer(r"ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}", text, re.I)))
+    matches.extend(list(re.finditer(r"(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b", text, re.I)))
+    if not matches:
+        return text
+    matches.sort(key=lambda m: m.start())
+    return text[matches[-1].start():].strip()
+
+
 def extract_posts_from_html(html: str) -> list[RawPost]:
     posts: list[RawPost] = []
-    block_re = re.compile(r'<li[^>]*\bid="post-(\d+)"[^>]*>([\s\S]*?)</li>', re.I)
-    for block in block_re.finditer(html):
+    start_re = re.compile(r'<li[^>]*\bid="post-(\d+)"[^>]*>', re.I)
+    starts = list(start_re.finditer(html))
+    for i, block in enumerate(starts):
         post_id = block.group(1)
-        chunk = block.group(2)
+        start = block.start()
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(html)
+        chunk = html[start:end]
         user = (
             re.search(r'data-author="([^"]+)"', chunk, re.I)
             or re.search(r'class="username"[^>]*>([^<]+)<', chunk, re.I)
@@ -97,20 +136,39 @@ def get_last_page(html: str) -> int:
 
 
 def extract_stl(text: str) -> list[str]:
-    nums: set[str] = set()
+    # STL (song thủ lô) should be a single pair. Monthly "nuôi khung" threads
+    # contain many historical pairs; we only take the latest pair found.
+    last: tuple[str, str] | None = None
     for pat in (
         r"STL[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
         r"CẶP[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
         r"cặp[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
     ):
         for m in re.finditer(pat, text, re.I):
-            nums.add(m.group(1))
-            nums.add(m.group(2))
-    return sorted(nums)
+            last = (m.group(1), m.group(2))
+    return [last[0], last[1]] if last else []
 
 
 def extract_btl(text: str) -> list[str]:
     return sorted({m.group(1) for m in re.finditer(r"BTL[:\s]*(\d{2})", text, re.I)})
+
+
+def extract_std_de(text: str) -> list[str]:
+    # Preserve pair semantics: return tokens like "59-89" (not flattened numbers).
+    # A user can "nuôi" multiple pairs in one post; keep all unique pairs in appearance order.
+    out: list[str] = []
+    for m in re.finditer(r"(?:STĐ|STD)\s*[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})", text, re.I):
+        token = f"{m.group(1)}-{m.group(2)}"
+        if token not in out:
+            out.append(token)
+    return out
+
+
+def extract_btd_de(text: str) -> list[str]:
+    nums: set[str] = set()
+    for m in re.finditer(r"(?:BTĐ|BTD)\s*[:\s]+(\d{2})\b", text, re.I):
+        nums.add(m.group(1))
+    return sorted(nums)
 
 
 def extract_de_info(text: str) -> dict:
@@ -130,9 +188,32 @@ def extract_de_info(text: str) -> dict:
             if re.search(r"đặc\s*biệt", m.group(0), re.I):
                 continue
             result["dau"].append(m.group(1))
+    # Lookingfor-style shorthand: "ĐB: CT1,6 (CT2,7; CT3,8) hạ C13458"
+    for m in re.finditer(r"đb\s*:\s*([\s\S]*?)(?=bộ\s*:|20\s*em|1s:|3,4d:|$)", text, re.I):
+        chunk = m.group(1)
+        for ct in re.finditer(r"CT\s*([\d,\s]+)", chunk, re.I):
+            result["cham"].extend(re.findall(r"\d", ct.group(1)))
+        for h in re.finditer(r"(?:hạ\s*)?C\s*([0-9,\s]+)", chunk, re.I):
+            result["cham"].extend(re.findall(r"\d", h.group(1)))
     for key in result:
         result[key] = list(dict.fromkeys(result[key]))
     return result
+
+
+def extract_de_list(text: str) -> list[str]:
+    """Extract de numbers from casual format: 'De 11,66,16,61,34,43,37,73,14'
+    Common in khu thao luan daily thread where users post short de lists.
+    Returns sorted unique numbers or empty list if no match."""
+    nums: set[str] = set()
+    for m in re.finditer(r'(?:^|\n)\s*\u0110\u1EC1\s+([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})', text, re.I):
+        for n in re.findall(r'\b(\d{2})\b', m.group(1)):
+            if 0 <= int(n) <= 99:
+                nums.add(n)
+    for m in re.finditer(r'\u0110\u1EC1\s*[:：]\s*([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})', text, re.I):
+        for n in re.findall(r'\b(\d{2})\b', m.group(1)):
+            if 0 <= int(n) <= 99:
+                nums.add(n)
+    return sorted(nums) if len(nums) >= 2 else []
 
 
 def _parse_btd_numbers(chunk: str) -> list[str]:
@@ -215,27 +296,37 @@ def extract_muc_lo(text: str) -> dict[int, list[str]]:
 
 
 def parse_picks(raw: str, thread_title: str = "") -> dict:
+    scoped = latest_day_section(raw)
     picks: dict = {}
-    stl = extract_stl(raw)
+    stl = extract_stl(scoped)
     if stl:
         picks["stl"] = stl
-    btl = extract_btl(raw)
+    btl = extract_btl(scoped)
     if btl:
         picks["btl"] = btl
-    de = extract_de_info(raw)
+    std_de = extract_std_de(scoped)
+    if std_de:
+        picks["std_de"] = std_de
+    btd_de = extract_btd_de(scoped)
+    if btd_de:
+        picks["btd_de"] = btd_de
+    de = extract_de_info(scoped)
     if any(de.values()):
         picks["de"] = de
-    btd = extract_btd(raw)
+    btd = extract_btd(scoped)
     if btd:
         picks["btd"] = btd
-    btd_dau = extract_btd_dau(raw)
+    btd_dau = extract_btd_dau(scoped)
     if btd_dau:
         picks["btd_dau"] = btd_dau
-    dan = extract_dan_de(raw)
+    dan = extract_dan_de(scoped)
     if dan:
         picks["dan_de"] = dan
-        picks["dan_pick_type"] = infer_dan_pick_type(len(dan), thread_title, raw)
-    muc = extract_muc_lo(raw)
+        picks["dan_pick_type"] = infer_dan_pick_type(len(dan), thread_title, scoped)
+    de_list = extract_de_list(scoped)
+    if de_list:
+        picks["de_list"] = de_list
+    muc = extract_muc_lo(scoped)
     if muc:
         picks["muc_lo"] = muc
     return picks
@@ -283,9 +374,68 @@ def crawl_thread_all_pages(slug: str) -> list[RawPost]:
     return all_posts
 
 
+def infer_monthly_thread_slugs(year: int, month: int) -> dict[str, str]:
+    """Discover monthly channel nuôi thread slugs by crawling listing pages.
+
+    Crawls the du-doan-xsmb forum listing (page-1 through page-{_LISTING_PAGES})
+    looking for thread titles that match known monthly patterns for this year/month.
+    Falls back to CACHED_MONTHLY_THREADS if no matches found in the listing.
+
+    Returns dict mapping keys like 'stl_k2n', 'btl_k3n', etc. to their slug strings.
+    """
+    cache_key = f"{year}-{month:02d}"
+    if cache_key in CACHED_MONTHLY_THREADS:
+        logger.info("Using cached monthly threads for %s", cache_key)
+        return dict(CACHED_MONTHLY_THREADS[cache_key])
+
+    listing = f"{BASE_URL}/forums/du-doan-xsmb/"
+    results: dict[str, str] = {}
+
+    for page in range(1, _LISTING_PAGES + 1):
+        url = listing if page == 1 else f"{listing}page-{page}"
+        html = fetch_html(url)
+        if not html:
+            continue
+
+        # Build compiled patterns for each key
+        for key, template in _MONTHLY_PATTERNS.items():
+            if key in results:
+                continue  # already found
+            pattern_str = template.format(year=year, month=month)
+            # pattern_str uses '.' as word separators — convert to \\s* for flexible matching
+            pattern_re = re.compile(
+                pattern_str.replace(".", r"\s*"),
+                re.I,
+            )
+            for m_link in re.finditer(
+                r'href="(?:(?:https?://[^"]*)?/?)?threads/([^."?#/]+(?:\.[^"?#/]+)?)[^"]*"[^>]*>([^<]+)<',
+                html,
+                re.I | re.S,
+            ):
+                slug = m_link.group(1)
+                title = re.sub(r"\s+", " ", m_link.group(2)).strip()
+                if pattern_re.search(title):
+                    results[key] = slug
+                    break
+
+        if len(results) == len(_MONTHLY_PATTERNS):
+            break  # all found
+
+    if results:
+        logger.info("Discovered %d monthly thread slugs for %s", len(results), cache_key)
+        return results
+
+    logger.warning(
+        "No monthly thread slugs found for %s on listing pages, "
+        "extend CACHED_MONTHLY_THREADS if this month is expected",
+        cache_key,
+    )
+    return {}
+
+
 def discover_daily_thread_slug(target_date: str, forum: str = "thao_luan") -> Optional[str]:
-    if target_date in KNOWN_DAILY_THAO_LUAN:
-        return KNOWN_DAILY_THAO_LUAN[target_date]
+    if target_date in CACHED_DAILY_THAO_LUAN:
+        return CACHED_DAILY_THAO_LUAN[target_date]
 
     y, m, d = map(int, target_date.split("-"))
     pattern = r"MỞ BÁT" if forum == "mo_bat" else r"THẢO LUẬN.*NGÀY"
@@ -300,13 +450,13 @@ def discover_daily_thread_slug(target_date: str, forum: str = "thao_luan") -> Op
         f"{d}-{m}-{y}",
         f"{d}/{m}",
     ]
-    for page in (1, 2):
+    for page in range(1, _LISTING_PAGES + 1):
         url = listing if page == 1 else f"{listing}page-{page}"
         html = fetch_html(url)
         for m_link in re.finditer(
-            r'href="(?:https?://[^"]*)?/threads/([^."?#/]+(?:\.[^"?#/]+)?)[^"]*"[^>]*>([^<]+)<',
+            r'href="(?:(?:https?://[^"]*)?/?)?threads/([^."?#/]+(?:\.[^"?#/]+)?)[^"]*"[^>]*>([^<]+)<',
             html,
-            re.I,
+            re.I | re.S,
         ):
             slug = m_link.group(1)
             title = re.sub(r"\s+", " ", m_link.group(2)).strip().upper()

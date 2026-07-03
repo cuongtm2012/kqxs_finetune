@@ -34,7 +34,7 @@ app = FastAPI(title="Lottery Analytics", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,5 +54,6 @@ def health():
         row = fetch_one("SELECT 1 AS ok")
         db_ok = row is not None
     except Exception:
+        logger.exception("Health check DB query failed")
         db_ok = False
     return {"status": "ok" if db_ok else "degraded", "database": "postgres" if db_ok else "down"}

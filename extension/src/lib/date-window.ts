@@ -2,8 +2,9 @@ const COLLECT_START_H = 18;
 const COLLECT_START_M = 30;
 const COLLECT_END_H = 18;
 const COLLECT_END_M = 0;
-const DRAW_H = 18;
-const DRAW_M = 15;
+/** Kết quả XSMB thường có sau 18:30 — finalize session ngày D và chuyển sang thu thập D+1 */
+const FINALIZE_H = COLLECT_START_H;
+const FINALIZE_M = COLLECT_START_M;
 
 function partsInTz(date: Date, timeZone: string) {
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -40,6 +41,22 @@ function addDays(y: number, m: number, d: number, delta: number) {
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + delta);
   return { year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+}
+
+export function getCalendarDate(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): string {
+  const p = partsInTz(now, timeZone);
+  return dateKey(p.year, p.month, p.day);
+}
+
+/** Ngày quay vừa xong để xem kết quả: trước 18:31 → hôm qua, từ 18:31 → hôm nay. */
+export function getLatestDrawScoreDate(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): string {
+  const p = partsInTz(now, timeZone);
+  const afterResult = p.hour > 18 || (p.hour === 18 && p.minute >= 31);
+  if (afterResult) {
+    return dateKey(p.year, p.month, p.day);
+  }
+  const prev = addDays(p.year, p.month, p.day, -1);
+  return dateKey(prev.year, prev.month, prev.day);
 }
 
 export function getTargetDate(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): string {
@@ -107,8 +124,28 @@ export function shouldFinalize(
   timeZone = "Asia/Ho_Chi_Minh",
 ): boolean {
   const [y, m, d] = targetDate.split("-").map(Number);
-  const drawMs = wallToUtcMs(y, m, d, DRAW_H, DRAW_M, timeZone);
-  return now.getTime() >= drawMs;
+  const finalizeMs = wallToUtcMs(y, m, d, FINALIZE_H, FINALIZE_M, timeZone);
+  return now.getTime() >= finalizeMs;
+}
+
+/** Thời điểm rollover tiếp theo (18:30 ICT) — chuyển sang target_date mới */
+export function getNextRolloverMs(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): number {
+  const p = partsInTz(now, timeZone);
+  const passedCutoff =
+    p.hour > COLLECT_START_H || (p.hour === COLLECT_START_H && p.minute >= COLLECT_START_M);
+  let { year: y, month: m, day: d } = p;
+  if (passedCutoff) {
+    const next = addDays(y, m, d, 1);
+    y = next.year;
+    m = next.month;
+    d = next.day;
+  }
+  return wallToUtcMs(y, m, d, COLLECT_START_H, COLLECT_START_M, timeZone);
+}
+
+export function isAfterResultCutoff(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): boolean {
+  const p = partsInTz(now, timeZone);
+  return p.hour > COLLECT_START_H || (p.hour === COLLECT_START_H && p.minute >= COLLECT_START_M);
 }
 
 export function getWindowBoundsMs(

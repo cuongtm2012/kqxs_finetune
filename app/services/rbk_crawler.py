@@ -46,6 +46,7 @@ def _read_cache(d: date, limit: int, lon: int = 1, allow_stale: bool = False) ->
                 return None
         return payload["data"]
     except (json.JSONDecodeError, KeyError, ValueError):
+        logger.exception("_read_cache failed for path: %s", path)
         return None
 
 

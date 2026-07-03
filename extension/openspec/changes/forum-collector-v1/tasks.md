@@ -38,10 +38,11 @@
 - [x] **T5.5** `summary.ts` aggregator
 
 ## Phase 6 — Popup UI
-- [x] **T6.1** `popup.html` + `popup.css` — tabs Thu thập | Đề xuất
-- [x] **T6.2** `popup.ts` — bind storage, settings
+- [x] **T6.1** `popup.html` + `popup.css` — tabs Thu thập | Đề xuất | Engine | Kết quả
+- [x] **T6.2** `popup.ts` — bind storage, settings, tab routing
 - [x] **T6.3** Export JSON
 - [x] **T6.4** Poll ngay, Clear session
+- [x] **T6.5** Popup width ~680px, panel collapse, pick-who popup
 
 ## Phase 7 — API Integration
 - [x] **T7.1** `api-client.ts` — POST full CollectSession + port fallback
@@ -50,13 +51,19 @@
 
 ## Phase 8 — Đề xuất Tab
 - [x] **T8.1** `recommendations-api.ts` — GET recommendations + fallback
-- [x] **T8.2** Popup render forum-only (không engine/hybrid)
-- [x] **T8.3** Extension v1.0.7 — chạm đề trên tab Đề xuất
+- [x] **T8.2** Dual panel trọng số + đồng thuận, de_by_expert, dan_board
+- [x] **T8.3** API-first load (poll không chặn render)
+- [x] **T8.4** Topic column (`thread_url`) trên bảng cao thủ
+
+## Phase 8b — Engine & Kết quả
+- [x] **T8b.1** `engine-api.ts` + tab Engine
+- [x] **T8b.2** `score-api.ts` + tab Kết quả (mketqua settlement)
+- [x] **T8b.3** `getLatestDrawScoreDate` trong `date-window.ts`
 
 ## Phase 9 — QA & Docs
 - [ ] **T9.1** So sánh JSON với `crawl_forum_picks.py` cùng ngày
-- [ ] **T9.2** Cập nhật `extension/README.md` (APP_PORT, tab Đề xuất)
+- [ ] **T9.2** Cập nhật `extension/README.md` (4 tab, APP_PORT)
 
 ## Current version
 
-`manifest.json` → **1.0.6**
+`manifest.json` → **1.5.0**

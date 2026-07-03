@@ -56,12 +56,39 @@ def _import_rss_mt():
     rbk_service.import_rss_mt()
 
 
+def _cleanup_old_checkpoints():
+    from app.repositories.draw_repo import draw_repo
+
+    draw_repo.cleanup_checkpoints(retention_days=90)
+
+
+def _import_and_score_forum_today():
+    from app.services.expert_score_service import run_daily_settlement
+
+    result = run_daily_settlement(prefer_mketqua=True)
+    if result.get("ok"):
+        logger.info(
+            "Forum pick settlement %s: %s/%s hits",
+            result.get("target_date"),
+            result.get("summary", {}).get("hits"),
+            result.get("summary", {}).get("total"),
+        )
+    else:
+        logger.warning("Forum pick settlement failed: %s", result.get("error"))
+
+
 def create_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _import_kqxs_today,
         CronTrigger(minute="15-31", hour=18),
         id="kqxs",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _import_and_score_forum_today,
+        CronTrigger(hour=18, minute=31),
+        id="forum_score",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -92,6 +119,12 @@ def create_scheduler() -> BackgroundScheduler:
         _import_rss_mt,
         CronTrigger(hour=19, minute=0),
         id="rssmt",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _cleanup_old_checkpoints,
+        CronTrigger(day_of_week="sun", hour=3, minute=0),
+        id="cleanup_checkpoints",
         replace_existing=True,
     )
     return scheduler

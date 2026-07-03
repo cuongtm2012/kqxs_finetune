@@ -9,6 +9,19 @@ logger = logging.getLogger(__name__)
 
 
 class DrawRepository:
+    @staticmethod
+    def _validate_mb_numbers(numbers: list[str]) -> bool:
+        if len(numbers) != 27:
+            logger.warning("MB numbers len=%d != 27, rejecting", len(numbers))
+            return False
+        for i, n in enumerate(numbers):
+            if not isinstance(n, str) or not n:
+                logger.warning(
+                    "MB numbers[%d]=%r invalid (empty or not string), rejecting", i, n
+                )
+                return False
+        return True
+
     def upsert_mb_draw(
         self,
         draw_date: str,
@@ -16,6 +29,8 @@ class DrawRepository:
         station: Optional[str] = None,
         source: str = "xskt",
     ) -> bool:
+        if not self._validate_mb_numbers(numbers):
+            return False
         prize_rows = flat_numbers_to_prize_rows(numbers)
         if not prize_rows:
             return False
@@ -209,6 +224,18 @@ class DrawRepository:
 
     def get_checkpoint(self, job_name: str) -> Optional[dict]:
         return fetch_one("SELECT * FROM import_checkpoints WHERE job_name = %s", (job_name,))
+
+    def cleanup_checkpoints(self, retention_days: int = 90) -> int:
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        result = execute(
+            "DELETE FROM import_checkpoints WHERE updated_at < %s",
+            (cutoff,),
+        )
+        deleted = result.rowcount if hasattr(result, "rowcount") else 0
+        logger.info("Cleaned up %s old import_checkpoints (retention=%s days)", deleted, retention_days)
+        return deleted
 
     def refresh_loto_view(self) -> None:
         execute("SELECT refresh_loto_views()")

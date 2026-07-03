@@ -11,10 +11,10 @@ from datetime import date
 from app.db import init_pool
 from app.repositories.forum_repo import forum_repo
 from app.services.forum_crawl_service import (
-    JUNE_2026_THREADS,
     RawPost,
     crawl_thread_all_pages,
     discover_daily_thread_slug,
+    infer_monthly_thread_slugs,
     posts_to_session_dict,
 )
 from app.services.forum_ingest_service import ingest_collect_session
@@ -32,10 +32,7 @@ def backfill_month(
     dry_run: bool = False,
     skip_existing: bool = False,
 ) -> dict:
-    if year == 2026 and month == 6:
-        thread_slugs = dict(JUNE_2026_THREADS)
-    else:
-        raise ValueError("Only 2026-06 thread map is bundled; extend JUNE_2026_THREADS for other months")
+    thread_slugs = infer_monthly_thread_slugs(year, month)
 
     cached_chan_nuoi: list[tuple[str, str, RawPost]] = []
     for slug in thread_slugs.values():

@@ -315,6 +315,7 @@ def _backtest_one_config(
                 rbk_limit=rbk_limit,
             )
         except ValueError:
+            logger.exception("build_candidates failed in intersection service")
             continue
 
         picks = [row["loto"] for row in result["final_picks"]]

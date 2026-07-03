@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.db import fetch_all
@@ -46,6 +47,17 @@ def pick_hit(pick_type: str, numbers: list[str], ketqua: dict) -> bool:
         return de_norm in {str(x).zfill(2) for x in numbers}
     if pick_type == "btd_dau":
         return de[0] in {str(x) for x in numbers}
+    if pick_type == "btd_de":
+        de_norm = de.zfill(2) if de else ""
+        return de_norm in {str(x).zfill(2) for x in numbers}
+    if pick_type == "std_de":
+        de_norm = de.zfill(2) if de else ""
+        for token in numbers:
+            parts = re.split(r"[-/,]", str(token))
+            pair = [p.strip().zfill(2) for p in parts if p.strip().isdigit()]
+            if de_norm in pair:
+                return True
+        return False
     return any(n in lotos for n in nums)
 
 

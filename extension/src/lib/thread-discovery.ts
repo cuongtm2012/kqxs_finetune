@@ -34,7 +34,6 @@ function monthTokens(targetDate: string): string[] {
     `THÁNG ${m}`,
     `${m}/${y}`,
     `THANG ${m}/${y}`,
-    String(y),
   ].map((t) => t.toUpperCase());
 }
 
@@ -44,6 +43,18 @@ function isLockedTitle(title: string): boolean {
 
 function threadMonthScore(title: string, targetDate: string): number {
   const t = normalizeTitle(title);
+  const [, targetM] = targetDate.split("-").map(Number);
+
+  // Strong penalty if title explicitly mentions a different month.
+  // Examples: "THÁNG 4/2026", "THANG 04 2026"
+  const monthMention =
+    t.match(/TH[ÁA]NG\s*(\d{1,2})\s*(?:\/\s*(\d{4}))?/) ||
+    t.match(/THANG\s*(\d{1,2})\s*(?:\/\s*(\d{4}))?/);
+  if (monthMention) {
+    const mm = Number(monthMention[1]);
+    if (mm && mm !== targetM) return -40;
+  }
+
   const tokens = monthTokens(targetDate);
   if (tokens.some((tok) => t.includes(tok))) return 20;
   const parsed = parseDateFromTitle(title);

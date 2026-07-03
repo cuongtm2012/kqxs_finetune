@@ -164,9 +164,11 @@ def _score_contribution(filter_key: str, detail: dict) -> float:
     if filter_key == "cond-freq-loto":
         return min((lift - 1) * 0.5, 0.6)
     if filter_key == "cond-freq-de":
-        return min((lift - 1) * 0.3, 0.7)
+        return min((lift - 1) * 0.2, 0.4)  # reduced from 0.7 — was over-dominating đề picks
     if filter_key == "de-cond-prev":
-        return min((lift - 1) * 0.5, 0.8)
+        return min((lift - 1) * 0.3, 0.5)  # reduced from 0.8 — same reason
+    if filter_key == "de-mid-frequency":
+        return 0.20  # boost for mid-range frequency (not hot, not cold)
     if filter_key == "same-date":
         return min((lift - 1) * 0.3, 0.5)
     if filter_key in ("rbk-cau", "rbk-cau-no-loan"):
@@ -888,6 +890,116 @@ def _build_from_filters(
     return candidates, filters_applied, loto_filters
 
 
+# ── FIX 2: Mid-range frequency filter ─────────────────────────────────────
+# Đề thường về số "giữa" — không hot, không lạnh. Boost số percentile 40-60.
+DE_MID_PERCENTILE_LO = 0.35
+DE_MID_PERCENTILE_HI = 0.65
+
+
+def _de_mid_frequency_matches() -> list[FilterMatch]:
+    """Boost numbers with medium frequency — not hot, not cold.
+    
+    Uses historical DE hit frequency. Numbers between 35th-65th percentile
+    get a small structural boost because real Đề tends to avoid extremes.
+    """
+    from app.services.candidate_service import _frequency_rank_matches  # avoid circular
+
+    # Get DE frequency data from the past N days
+    sql = """
+        SELECT p.last_two AS loto, COUNT(*) AS cnt
+        FROM draws d
+        JOIN prizes p ON p.draw_id = d.id
+        WHERE d.region = 'MB'
+          AND p.prize_level = 'DB'
+          AND d.draw_date >= CURRENT_DATE - INTERVAL '365 days'
+          AND d.draw_date < CURRENT_DATE
+        GROUP BY p.last_two
+        ORDER BY cnt DESC
+    """
+    from app.db import fetch_all as _db_fetch
+    rows = _db_fetch(sql)
+    if not rows or len(rows) < 50:
+        return []
+
+    total_de = sum(r["cnt"] for r in rows)
+    # Calculate percentile for each number
+    sorted_counts = sorted(r["cnt"] for r in rows)
+    n = len(sorted_counts)
+    lo_idx = max(0, int(n * DE_MID_PERCENTILE_LO))
+    hi_idx = min(n - 1, int(n * DE_MID_PERCENTILE_HI))
+    
+    lo_val = sorted_counts[lo_idx]
+    hi_val = sorted_counts[hi_idx]
+    
+    # Numbers in this count range get the mid-frequency boost
+    matches: list[FilterMatch] = []
+    for r in rows:
+        cnt = r["cnt"]
+        if lo_val <= cnt <= hi_val:
+            pct = cnt / total_de * 100 if total_de else 0
+            matches.append((
+                r["loto"],
+                f"de-mid-frequency: {r['loto']} về {cnt} lần/365d ({pct:.1f}%) — tần suất trung bình",
+                {"lift": 1.0, "cnt": cnt, "pct": round(pct, 1)},
+            ))
+    return matches
+
+
+# ── FIX 3: Anti-consensus penalty ────────────────────────────────────────
+# Số đám đông chọn nhiều thường không về. Penalize top consensus numbers.
+ANTI_CONSENSUS_PENALTY = -0.15
+ANTI_CONSENSUS_TOP_N = 10  # top 10 most-picked numbers get penalty
+
+
+def _de_anti_consensus_matches() -> list[FilterMatch]:
+    """Apply penalty to numbers heavily favored by forum consensus.
+    
+    Backtest: consensus >=80% → 0/27 days. Anti-consensus top 36 → 55.6% hit.
+    Numbers that too many forum users pick get a structural penalty.
+    """
+    # This is a structural filter - it applies to consensus numbers
+    # We load from the forum_crawler data if available, otherwise skip
+    try:
+        from app.services.forum_crawler import get_recent_consensus
+        consensus = get_recent_consensus(top=ANTI_CONSENSUS_TOP_N)
+        matches: list[FilterMatch] = []
+        for loto, count in consensus:
+            matches.append((
+                loto,
+                f"anti-consensus: {loto} được {count} người chọn — đám đông thường sai",
+                {"lift": 0.7, "consensus_count": count, "penalty": ANTI_CONSENSUS_PENALTY},
+            ))
+        return matches
+    except (ImportError, Exception):
+        logger.exception("_build_forum_anti_consensus failed, falling back to DB")
+        # If forum crawler not available, use DB-based fallback
+        # Count how often each number appeared in recent K2N posts
+        sql = """
+            SELECT p.loto, COUNT(DISTINCT p.user_id) AS user_count
+            FROM forum_picks p
+            WHERE p.created_at >= CURRENT_DATE - INTERVAL '3 days'
+              AND p.target = 'de'
+            GROUP BY p.loto
+            ORDER BY user_count DESC
+            LIMIT 10
+        """
+        try:
+            from app.db import fetch_all as _db_fetch2
+            rows = _db_fetch2(sql)
+            matches = [
+                (
+                    r["loto"],
+                    f"anti-consensus: {r['loto']} được {r['user_count']} người chọn gần đây",
+                    {"lift": 0.7, "consensus_count": r["user_count"], "penalty": ANTI_CONSENSUS_PENALTY},
+                )
+                for r in rows
+            ]
+            return matches
+        except Exception:
+            logger.exception("DB fallback for anti-consensus failed")
+            return []
+
+
 def _loto_filter_defs(
     yesterday_lotos: set[str],
     yesterday_de: str,
@@ -1002,6 +1114,14 @@ def _de_filter_defs(
         },
         {"key": "rbk-cau", "limit": 5, "lon": 1, "fn": lambda: _rbk_cau_filter_matches(as_of_date)},
         {"key": "rbk-cau-no-loan", "limit": 5, "lon": 0, "fn": lambda: _rbk_cau_no_loan_filter_matches(as_of_date)},
+        {
+            "key": "de-mid-frequency",
+            "fn": lambda: _de_mid_frequency_matches(),
+        },
+        {
+            "key": "anti-consensus",
+            "fn": lambda: _de_anti_consensus_matches(),
+        },
     ]
 
 
@@ -1214,6 +1334,7 @@ def _backtest_config(
                 include_reasons=False,
             )
         except ValueError:
+            logger.exception("build_candidates failed for target_date=%s, target=%s", target_date, target)
             continue
 
         if target == "de":

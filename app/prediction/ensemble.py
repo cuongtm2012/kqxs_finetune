@@ -1,6 +1,9 @@
 """Ensemble combiner (M8)."""
 
+import logging
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from app.prediction.constants import (
     DEFAULT_ENSEMBLE_WEIGHTS,
@@ -178,6 +181,7 @@ def score_ensemble(
             try:
                 solo_scores[m] = score_model(ctx, m)
             except Exception:
+                logger.exception("score_model failed for model %s", m)
                 pass
         
         if len(solo_scores) >= 2:

@@ -12,6 +12,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "rbk-poll") {
     await setupAlarms();
     await runPollCycle();
+    return;
+  }
+  if (alarm.name === "rbk-rollover") {
+    await setupAlarms();
+    await runPollCycle({ force: true });
   }
 });
 

@@ -12,6 +12,10 @@ export interface ForumAuth {
 export interface PostPicks {
   stl?: string[];
   btl?: string[];
+  /** Song thủ đề: "STĐ: 59,89" */
+  std_de?: string[];
+  /** Bạch thủ đề: "BTĐ: 89" */
+  btd_de?: string[];
   de?: { cham: string[]; tong: string[]; dau: string[] };
   /** Đề đặc biệt (thảo luận): b02, b12 → 02, 12 */
   btd?: string[];
