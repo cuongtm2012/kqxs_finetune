@@ -6,6 +6,9 @@ __pycache__/
 *.log
 .pytest_cache/
 .mypy_cache/
+.cursor/
+.hermes/
+.vscode/
 extension/config/forum-auth.local.json
 extension/node_modules/
 extension/dist/
