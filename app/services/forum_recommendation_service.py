@@ -346,6 +346,7 @@ def _de_top4(
 ) -> list[str]:
     de_scores: dict[str, float] = {}
     dan_pool: set[str] = set()
+    dan_users: set[tuple[str, str]] = set()  # (user, norm_num) from dan_board — prevent double counting
 
     for row in dan_board or []:
         if ctx.mode == "weight":
@@ -356,25 +357,59 @@ def _de_top4(
             )
         for num in row.get("numbers") or []:
             n = _norm_de(num)
+            dan_users.add((row["user"], n))
             dan_pool.add(n)
             de_scores[n] = de_scores.get(n, 0.0) + float(w)
 
     for p in picks:
         pt = p.get("pick_type", "")
+        user = p["username"]
         if pt == "btd":
-            w = ctx.scoring_w(p["username"], "btd")
+            w = ctx.scoring_w(user, "btd")
             for num in p.get("numbers") or []:
                 n = _norm_de(num)
                 dan_pool.add(n)
-                de_scores[n] = de_scores.get(n, 0.0) + w * 1.5
+                # Double‑counting check: user already had this number in dan_board
+                if (user, n) in dan_users:
+                    de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
+                else:
+                    de_scores[n] = de_scores.get(n, 0.0) + w * 1.5
             continue
-        if pt not in DAN_PICK_TYPES:
+        if pt in DAN_PICK_TYPES:
+            w = ctx.scoring_w(user, pt if pt != "dan_de" else "dan_de")
+            for num in p.get("numbers") or []:
+                n = _norm_de(num)
+                dan_users.add((user, n))
+                dan_pool.add(n)
+                de_scores[n] = de_scores.get(n, 0.0) + w
             continue
-        w = ctx.scoring_w(p["username"], pt if pt != "dan_de" else "dan_de")
-        for num in p.get("numbers") or []:
-            n = _norm_de(num)
-            dan_pool.add(n)
-            de_scores[n] = de_scores.get(n, 0.0) + w
+        # Skip de_cham — handled separately below
+        if pt == "de_cham":
+            continue
+        # Handle remaining DE_FAMILY: de_dau, de_tong, std_de, btd_dau, btd_de
+        DE_FAMILY = frozenset({"de_dau", "de_tong", "btd_dau", "std_de", "btd_de"})
+        if pt in DE_FAMILY:
+            w = ctx.scoring_w(user, pt)
+            bonus_mult = 1.5 if pt in ("std_de", "btd_de") else 1.0
+            if pt == "std_de":
+                # std_de: numbers are pairs like "39-79", "14-41"
+                for token in p.get("numbers") or []:
+                    parts = str(token).replace(",", "-").split("-")
+                    for part in parts:
+                        n = _norm_de(part.strip())
+                        dan_pool.add(n)
+                        if (user, n) in dan_users:
+                            de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
+                        else:
+                            de_scores[n] = de_scores.get(n, 0.0) + w * bonus_mult
+            else:
+                for num in p.get("numbers") or []:
+                    n = _norm_de(num)
+                    dan_pool.add(n)
+                    if (user, n) in dan_users:
+                        de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
+                    else:
+                        de_scores[n] = de_scores.get(n, 0.0) + w * bonus_mult
 
     for row in forum.get("dan_board") or []:
         for num in row.get("numbers") or []:
@@ -405,56 +440,177 @@ def _de_top4(
     return list(dan_pool)[:4]
 
 
-def _de_top4_consensus(
+def _de_top4_anti_consensus(
     picks: list[dict],
     forum: dict,
-    dan_board: list[dict] | None = None,
+    dan_board: list[dict] | None,
+    ctx: ScoringContext,
 ) -> list[str]:
-    """Đồng thuận đề: đếm số cao thủ có số trong dàn (mỗi nick tính 1 lần / số)."""
-    user_sets: dict[str, set[str]] = {}
+    """Anti-consensus de: chon so it duoc chon va bi nhieu nguoi loai tru."""
 
-    def _add(user: str, num: str) -> None:
-        n = _norm_de(num)
-        if user not in user_sets:
-            user_sets[user] = set()
-        user_sets[user].add(n)
+    # Step 1: Build consensus + exclusion scores
+    all_nums = [str(i).zfill(2) for i in range(100)]
+    consensus = {n: 0 for n in all_nums}        # count of users who HAVE this number
+    exclusion = {n: 0.0 for n in all_nums}       # total weight of users who EXCLUDE this number
+    thao_luan_signal: set[str] = set()            # numbers picked in thao_luan forum (strong signal)
 
     for row in dan_board or []:
         user = row["user"]
-        for num in row.get("numbers") or []:
-            _add(user, num)
+        nums = set(str(n).zfill(2) for n in (row.get("numbers") or []))
+        dan_size = len(nums)
+        if dan_size <= 0 or dan_size >= 100:
+            continue  # skip invalid dans
 
+        w = row.get("weight") or expert_weight(user, row.get("pick_type", "dan_de"))
+        excluded_count = 100 - dan_size
+        if excluded_count <= 0:
+            continue
+
+        excl_weight_per_num = float(w) / excluded_count
+
+        for n in range(100):
+            num = str(n).zfill(2)
+            if num in nums:
+                consensus[num] += 1
+            else:
+                exclusion[num] += excl_weight_per_num
+
+    # Also process picks (btd and other de types)
     for p in picks:
         pt = p.get("pick_type", "")
-        if pt == "btd":
-            user = p["username"]
-            for num in p.get("numbers") or []:
-                _add(user, num)
-            continue
-        if pt not in DAN_PICK_TYPES:
-            continue
         user = p["username"]
-        for num in p.get("numbers") or []:
-            _add(user, num)
+        forum_kind = p.get("forum", "")
 
+        if pt in DAN_PICK_TYPES:
+            nums = set(str(n).zfill(2) for n in (p.get("numbers") or []))
+            dan_size = len(nums)
+            if dan_size <= 0 or dan_size >= 100:
+                continue
+            w = ctx.scoring_w(user, pt if pt != "dan_de" else "dan_de")
+            excluded_count = 100 - dan_size
+            if excluded_count <= 0:
+                continue
+            excl_weight_per_num = float(w) / excluded_count
+            for n in range(100):
+                num = str(n).zfill(2)
+                if num in nums:
+                    consensus[num] += 1
+                else:
+                    exclusion[num] += excl_weight_per_num
+
+        elif pt == "btd":
+            # BTD: strong signal — bump consensus + track thao_luan
+            raw_nums = p.get("numbers") or []
+            for d in raw_nums:
+                n = _norm_de(d)
+                if n in consensus:
+                    consensus[n] += 1
+                    if forum_kind == "thao_luan":
+                        thao_luan_signal.add(n)
+
+        elif pt in frozenset({"de_dau", "de_tong", "btd_dau", "btd_de"}):
+            # Single digits (0-9) or 2-digit numbers.
+            raw_nums = p.get("numbers") or []
+            for d in raw_nums:
+                n = _norm_de(d)
+                if n in consensus:
+                    consensus[n] += 1
+                    if forum_kind == "thao_luan":
+                        thao_luan_signal.add(n)
+
+        elif pt == "std_de":
+            # std_de: numbers come as pairs like "39-79", "14-41"
+            raw_nums = p.get("numbers") or []
+            for token in raw_nums:
+                parts = str(token).replace(",", "-").split("-")
+                for part in parts:
+                    n = _norm_de(part.strip())
+                    if n in consensus:
+                        consensus[n] += 1
+                        if forum_kind == "thao_luan":
+                            thao_luan_signal.add(n)
+
+    # Process forum dan_board (same exclusion logic)
     for row in forum.get("dan_board") or []:
         user = row.get("user", "")
-        for num in row.get("numbers") or []:
-            if user:
-                _add(user, num)
+        if not user:
+            continue
+        nums = set(str(n).zfill(2) for n in (row.get("numbers") or []))
+        dan_size = len(nums)
+        if dan_size <= 0 or dan_size >= 100:
+            continue
+        w = expert_weight(user, "dan_de")
+        excluded_count = 100 - dan_size
+        if excluded_count <= 0:
+            continue
+        excl_weight_per_num = float(w) / excluded_count
+        for n in range(100):
+            num = str(n).zfill(2)
+            if num in nums:
+                consensus[num] += 1
+            else:
+                exclusion[num] += excl_weight_per_num
 
-    counts: dict[str, int] = {}
-    for nums in user_sets.values():
-        for n in nums:
-            counts[n] = counts.get(n, 0) + 1
+    # Step 2: Dynamic threshold
+    anti_threshold = _anti_threshold(consensus)
 
-    if counts:
-        return sorted(counts.keys(), key=lambda n: (-counts[n], n))[:4]
+    # Step 3: Score & rank
+    scores = {}
 
-    pool: list[str] = []
-    for nums in user_sets.values():
-        pool.extend(nums)
-    return sorted(dict.fromkeys(pool))[:4]
+    for n in all_nums:
+        if consensus[n] < 1:
+            continue  # no one picks it — likely random junk
+
+        if consensus[n] >= anti_threshold:
+            # Skip threshold for thao_luan signal numbers — strong signal
+            if n not in thao_luan_signal:
+                continue  # too popular — anti-consensus rule
+
+        anti_score = 1.0 / (1.0 + consensus[n])     # inverse of popularity
+        excl_score = exclusion[n]                     # weight of users who exclude it
+
+        final_score = anti_score * 0.4 + excl_score * 0.6
+
+        # Bonus for thao_luan signal: số được thảo luận chốt có tín hiệu mạnh hơn
+        if n in thao_luan_signal:
+            final_score += 0.4  # flat bonus — ưu tiên số từ khu thảo luận
+
+        scores[n] = final_score
+
+    if not scores:
+        # Fallback: if threshold filters everything, relax it
+        threshold_fallback = max(3, anti_threshold * 2)
+        for n in all_nums:
+            if consensus[n] < 1:
+                continue
+            if consensus[n] >= threshold_fallback:
+                # Skip threshold for thao_luan signal
+                if n not in thao_luan_signal:
+                    continue
+            anti_score = 1.0 / (1.0 + consensus[n])
+            excl_score = exclusion[n]
+            final_score = anti_score * 0.4 + excl_score * 0.6
+            if n in thao_luan_signal:
+                final_score += 0.4
+            scores[n] = final_score
+
+    if not scores:
+        # Last resort: pick lowest consensus numbers
+        candidates = [n for n in all_nums if consensus[n] >= 1]
+        candidates.sort(key=lambda n: (consensus[n], n))
+        return candidates[:4]
+
+    result = sorted(scores.keys(), key=lambda n: (-scores[n], n))[:4]
+    return result
+
+
+def _anti_threshold(consensus_scores: dict[str, int]) -> int:
+    """Threshold = median, minimum 2, maximum 40."""
+    values = sorted(consensus_scores.values())
+    if not values:
+        return 2
+    median = values[len(values) // 2]
+    return max(2, min(40, int(median)))
 
 
 def _de_cham_consensus(picks: list[dict], forum: dict) -> list[dict]:
@@ -566,7 +722,7 @@ def build_recommendations(
         ranked_consensus[0]["loto"] if ranked_consensus else None
     )
     de_top = _de_top4(picks_rows, forum, dan_board, ctx)
-    de_consensus = _de_top4_consensus(picks_rows, forum, dan_board)
+    de_consensus = _de_top4_anti_consensus(picks_rows, forum, dan_board, ctx)
     cham_leaders = _de_cham_leaders(picks_rows, forum, ctx)
     cham_consensus = _de_cham_consensus(picks_rows, forum)
 
