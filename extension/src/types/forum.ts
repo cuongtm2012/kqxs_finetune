@@ -23,6 +23,8 @@ export interface PostPicks {
   btd_dau?: string[];
   dan_de?: string[];
   dan_pick_type?: "dan_40s" | "dan_36s" | "dan_64s" | "dan_de";
+  /** Casual đề list: "4 số : 14,41,78,87" */
+  de_list?: string[];
   muc_lo?: Record<number, string[]>;
 }
 
@@ -48,6 +50,8 @@ export interface ThreadState {
   lowest_page_fetched?: number;
   /** True when we've fetched enough pages to cover windowStartMs. */
   backfill_complete?: boolean;
+  /** Cumulative pages fetched (audit). */
+  pages_fetched_total?: number;
 }
 
 export interface ForumDaySummary {
@@ -83,7 +87,9 @@ export interface CollectSession {
   window_start: string;
   window_end: string;
   finalized_at?: string;
-  /** Khóa danh sách thread sau lần discover đầu — tránh poll nhảy topic. */
+  /** Finalized while daily-thread backfill was incomplete. */
+  coverage_warning?: boolean;
+  /** Khóa danh sách thread sau lần discover đầu — tránh poll nhậy topic. */
   discovered_threads?: DiscoveredThread[];
   threads: Record<string, ThreadState>;
   posts: Record<string, ForumPost>;
@@ -108,7 +114,7 @@ export interface RuntimeStatus {
   last_sync_status?: string;
   last_poll_status?: string;
   target_date: string;
-  collect_status: "idle" | "collecting" | "finalized" | "sunday_skip" | "waiting_thread";
+  collect_status: "idle" | "collecting" | "backfilling" | "finalized" | "sunday_skip" | "waiting_thread";
   post_count: number;
   new_posts_last_poll: number;
 }
@@ -131,7 +137,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   timezone: "Asia/Ho_Chi_Minh",
   poll_interval_active_min: 5,
   poll_interval_idle_min: 30,
-  api_base_url: "http://localhost:18715",
+  api_base_url: "http://127.0.0.1:18715",
   auto_sync: false,
   target_users: [
     "LangThang1977", "Haiphong27", "T98", "TieuToanPhong",

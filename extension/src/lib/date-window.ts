@@ -128,6 +128,25 @@ export function shouldFinalize(
   return now.getTime() >= finalizeMs;
 }
 
+/** 30 minutes after finalize — allow closing session even if backfill incomplete. */
+export const BACKFILL_FINALIZE_GRACE_MS = 30 * 60 * 1000;
+
+export function getFinalizeGraceEndMs(
+  targetDate: string,
+  timeZone = "Asia/Ho_Chi_Minh",
+): number {
+  const [y, m, d] = targetDate.split("-").map(Number);
+  return wallToUtcMs(y, m, d, FINALIZE_H, FINALIZE_M, timeZone) + BACKFILL_FINALIZE_GRACE_MS;
+}
+
+export function isPastFinalizeGrace(
+  now = new Date(),
+  targetDate = getTargetDate(now),
+  timeZone = "Asia/Ho_Chi_Minh",
+): boolean {
+  return now.getTime() >= getFinalizeGraceEndMs(targetDate, timeZone);
+}
+
 /** Thời điểm rollover tiếp theo (18:30 ICT) — chuyển sang target_date mới */
 export function getNextRolloverMs(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): number {
   const p = partsInTz(now, timeZone);
@@ -141,6 +160,12 @@ export function getNextRolloverMs(now = new Date(), timeZone = "Asia/Ho_Chi_Minh
     d = next.day;
   }
   return wallToUtcMs(y, m, d, COLLECT_START_H, COLLECT_START_M, timeZone);
+}
+
+/** Sau 18:31 ICT — KQXS thường đã có, có thể chấm tự động. */
+export function isAfterDrawSettlement(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): boolean {
+  const p = partsInTz(now, timeZone);
+  return p.hour > 18 || (p.hour === 18 && p.minute >= 31);
 }
 
 export function isAfterResultCutoff(now = new Date(), timeZone = "Asia/Ho_Chi_Minh"): boolean {

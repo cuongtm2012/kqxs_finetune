@@ -35,6 +35,7 @@
       <div class="row"><span>Mới (poll cuối)</span><strong id="new-posts">0</strong></div>
       <div class="row"><span>Poll lúc</span><span id="last-poll" class="muted">—</span></div>
       <div class="row"><span>Kết quả poll</span><span id="last-poll-status" class="muted">—</span></div>
+      <div class="row"><span>Backfill</span><span id="backfill-status" class="muted">—</span></div>
       <div class="row"><span>Đăng nhập</span><span id="auth-status-short" class="muted">—</span></div>
     </section>
 
@@ -46,6 +47,14 @@
   </div>
 
   <div id="panel-reco" class="tab-panel hidden" hidden>
+    <section class="card actions tab-actions-top">
+      <button id="btn-refresh-reco" type="button">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span class="btn-label">Tải đề xuất</span>
+      </button>
+    </section>
+    <p id="reco-error" class="error hidden tab-error"></p>
+
     <div id="reco-loading" class="reco-loading hidden" hidden aria-live="polite" aria-busy="false">
       <div class="reco-loading-bar" role="progressbar">
         <div class="reco-loading-bar-fill"></div>
@@ -55,7 +64,10 @@
 
     <div id="reco-content" class="reco-content">
     <section class="card reco-panel reco-panel-expert">
-      <h2 class="reco-panel-title">Theo cao thủ <span class="muted">(trọng số)</span></h2>
+      <div class="reco-panel-head">
+        <h2 class="reco-panel-title">Theo cao thủ <span class="muted">(trọng số)</span></h2>
+        <button type="button" class="reco-panel-copy" id="btn-copy-reco-expert" title="Copy panel trọng số">Copy</button>
+      </div>
       <div class="row"><span>BTL lô</span><strong id="reco-btl">—</strong></div>
       <div class="row"><span>Bao lô 9</span><span id="reco-bao" class="muted nums">—</span></div>
       <div class="row"><span>Xiên 2</span><span id="reco-xien" class="muted">—</span></div>
@@ -64,7 +76,10 @@
     </section>
 
     <section class="card reco-panel reco-panel-consensus">
-      <h2 class="reco-panel-title">Theo đồng thuận <span class="muted">(số người chốt)</span></h2>
+      <div class="reco-panel-head">
+        <h2 class="reco-panel-title">Theo đồng thuận <span class="muted">(số người chốt)</span></h2>
+        <button type="button" class="reco-panel-copy" id="btn-copy-reco-consensus" title="Copy panel đồng thuận">Copy</button>
+      </div>
       <p id="reco-consensus-hint" class="reco-consensus-hint muted hidden"></p>
       <div class="row"><span>BTL lô</span><strong id="reco-consensus-btl">—</strong></div>
       <div class="row"><span>Bao lô 9</span><span id="reco-consensus-bao" class="muted nums">—</span></div>
@@ -136,8 +151,19 @@
 
     <section class="card">
       <h2>Cao thủ đang chốt</h2>
+      <p id="reco-experts-legend" class="reco-experts-legend muted">W = trọng số thủ công · Hiệu suất = hit/total · Eff = trọng số đề xuất</p>
+      <div class="reco-experts-toolbar">
+        <span class="muted reco-sort-label">Scoring:</span>
+        <button type="button" id="btn-scoring-blend" class="secondary small reco-sort-btn active">Blend</button>
+        <button type="button" id="btn-scoring-weight" class="secondary small reco-sort-btn">W cũ</button>
+        <button type="button" id="btn-scoring-measured" class="secondary small reco-sort-btn">Đo được</button>
+        <span class="muted reco-sort-label">Sắp xếp:</span>
+        <button type="button" id="btn-sort-experts-weight" class="secondary small reco-sort-btn">Theo W</button>
+        <button type="button" id="btn-sort-experts-perf" class="secondary small reco-sort-btn">Hiệu suất</button>
+        <button type="button" id="btn-sort-experts-effective" class="secondary small reco-sort-btn active">Eff</button>
+      </div>
       <table class="reco-table">
-        <thead><tr><th>Cao thủ</th><th>Khu</th><th>Topic</th><th>Loại</th><th>Số</th><th>Hiệu suất</th><th>W</th></tr></thead>
+        <thead><tr><th>Cao thủ</th><th>Khu</th><th>Topic</th><th>Loại</th><th>Số</th><th>Hiệu suất</th><th>W</th><th>Eff</th></tr></thead>
         <tbody id="reco-experts-rows"></tbody>
       </table>
     </section>
@@ -158,13 +184,6 @@
       </table>
     </section>
 
-    <section class="card actions">
-      <button id="btn-refresh-reco" type="button">
-        <span class="btn-spinner" aria-hidden="true"></span>
-        <span class="btn-label">Tải đề xuất</span>
-      </button>
-    </section>
-    <p id="reco-error" class="error hidden"></p>
     </div>
 
     <div id="pick-who-popup" class="pick-who-popup hidden" hidden role="dialog" aria-modal="true" aria-labelledby="pick-who-title">
@@ -239,12 +258,22 @@
   </div>
 
   <div id="panel-score" class="tab-panel hidden" hidden>
+    <section class="card actions tab-actions-top">
+      <button id="btn-refresh-score" type="button">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span class="btn-label">Tải kết quả</span>
+      </button>
+      <button id="btn-run-score" type="button" class="secondary">Chấm lại (mketqua)</button>
+    </section>
+    <p id="score-error" class="error hidden tab-error"></p>
+
     <section class="card reco-meta">
       <div class="row"><span>Ngày quay</span><strong id="score-target-date">—</strong></div>
       <div class="row"><span>Đề (ĐB)</span><strong id="score-de">—</strong></div>
       <div class="row"><span>Giải ĐB</span><span id="score-db" class="nums muted">—</span></div>
       <div class="row"><span>Trúng / Tổng</span><strong id="score-summary">—</strong></div>
       <p id="score-cutoff-hint" class="reco-freshness-hint muted">Chỉ tính pick chốt trước 18:00 (ICT)</p>
+      <p id="score-coverage-hint" class="reco-freshness-hint muted hidden"></p>
     </section>
 
     <section class="card">
@@ -255,14 +284,6 @@
       </table>
     </section>
 
-    <section class="card actions">
-      <button id="btn-refresh-score" type="button">
-        <span class="btn-spinner" aria-hidden="true"></span>
-        <span class="btn-label">Tải kết quả</span>
-      </button>
-      <button id="btn-run-score" type="button" class="secondary">Chấm lại (mketqua)</button>
-    </section>
-    <p id="score-error" class="error hidden"></p>
   </div>
 
   <div id="settings-panel" class="settings-panel">
@@ -280,6 +301,7 @@
     <section class="card">
       <h2>Settings</h2>
       <div class="row"><span>API URL</span><span id="cfg-api-url" class="cfg-value muted">—</span></div>
+      <div class="row"><span>API status</span><strong id="cfg-api-status">—</strong></div>
       <div class="row"><span>Auto sync</span><strong id="cfg-auto-sync">—</strong></div>
       <div class="row"><span>Poll active</span><strong id="cfg-poll-active">—</strong></div>
     </section>

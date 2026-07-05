@@ -14,6 +14,7 @@ from app.services.forum_crawl_service import (
     RawPost,
     crawl_thread_all_pages,
     discover_daily_thread_slug,
+    expand_chan_nuoi_posts_by_lan,
     infer_monthly_thread_slugs,
     posts_to_session_dict,
 )
@@ -39,6 +40,8 @@ def backfill_month(
         for raw in crawl_thread_all_pages(slug):
             cached_chan_nuoi.append(("chan_nuoi", slug, raw))
 
+    chan_nuoi_by_date = expand_chan_nuoi_posts_by_lan(cached_chan_nuoi, year, month)
+
     daily_cache: dict[str, list[tuple[str, str, RawPost]]] = {}
 
     summary = {
@@ -51,6 +54,7 @@ def backfill_month(
         "days_skipped_no_thread": 0,
         "pick_rows_total": 0,
         "chan_nuoi_posts_cached": len(cached_chan_nuoi),
+        "chan_nuoi_lan_days": len(chan_nuoi_by_date),
         "errors": [],
     }
 
@@ -73,7 +77,7 @@ def backfill_month(
             if not slug:
                 summary["days_skipped_no_thread"] += 1
 
-        raw_for_day = list(cached_chan_nuoi) + daily_cache.get(target, [])
+        raw_for_day = list(daily_cache.get(target, [])) + list(chan_nuoi_by_date.get(target, []))
         session = posts_to_session_dict(target, raw_for_day)
         if not session["posts"]:
             summary["days_skipped_no_posts"] += 1

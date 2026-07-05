@@ -9,6 +9,7 @@ import {
   DEFAULT_SETTINGS,
   STORAGE_KEYS,
 } from "../types/forum.js";
+import { apiBases, apiFetch, normalizeApiBase, DEFAULT_API_BASE } from "./api-base.js";
 
 function get<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve) => {
@@ -65,8 +66,13 @@ export async function ensureConfigSeeded(): Promise<void> {
   }
   const settings = await getSettings();
   const storedSettings = await get<ExtensionSettings>(STORAGE_KEYS.settings);
-  if (!storedSettings?.api_base_url) {
-    await set({ [STORAGE_KEYS.settings]: settings });
+  const normalizedUrl = normalizeApiBase(settings.api_base_url || DEFAULT_API_BASE);
+  if (
+    !storedSettings?.api_base_url ||
+    storedSettings.api_base_url.includes("localhost") ||
+    !/^https?:\/\//i.test(storedSettings.api_base_url)
+  ) {
+    await set({ [STORAGE_KEYS.settings]: { ...settings, api_base_url: normalizedUrl } });
   }
 }
 
@@ -138,4 +144,32 @@ export async function listSessionDates(): Promise<string[]> {
     .map((k) => k.replace(STORAGE_KEYS.sessionPrefix, ""))
     .sort()
     .reverse();
+}
+
+export type RecoExpertSortMode = "weight" | "performance" | "effective";
+
+export type RecoScoringMode = "weight" | "measured" | "blend";
+
+const RECO_EXPERT_SORT_KEY = "reco_expert_sort";
+const RECO_SCORING_MODE_KEY = "reco_scoring_mode";
+
+export async function getRecoScoringMode(): Promise<RecoScoringMode> {
+  const v = await get<string>(RECO_SCORING_MODE_KEY);
+  if (v === "weight" || v === "measured") return v;
+  return "blend";
+}
+
+export async function saveRecoScoringMode(mode: RecoScoringMode): Promise<void> {
+  await set({ [RECO_SCORING_MODE_KEY]: mode });
+}
+
+export async function getRecoExpertSort(): Promise<RecoExpertSortMode> {
+  const v = await get<string>(RECO_EXPERT_SORT_KEY);
+  if (v === "performance") return "performance";
+  if (v === "effective") return "effective";
+  return "weight";
+}
+
+export async function saveRecoExpertSort(mode: RecoExpertSortMode): Promise<void> {
+  await set({ [RECO_EXPERT_SORT_KEY]: mode });
 }

@@ -45,9 +45,20 @@ def get_live_experts(target_date: Optional[str] = Query(None)):
 
 
 @router.get("/recommendations")
-def get_recommendations(target_date: Optional[str] = Query(None)):
+def get_recommendations(
+    target_date: Optional[str] = Query(None),
+    scoring_mode: Optional[str] = Query(None),
+    performance_period: Optional[str] = Query(None),
+):
     d = target_date or forum_target_date()
-    return build_recommendations(d)
+    try:
+        return build_recommendations(
+            d,
+            scoring_mode=scoring_mode,
+            performance_period=performance_period,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 @router.get("/experts/weights")

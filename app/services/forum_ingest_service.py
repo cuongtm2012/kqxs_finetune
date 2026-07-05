@@ -120,6 +120,25 @@ def _extract_pick_rows(posts: dict[str, Any]) -> dict[tuple[str, str], dict]:
     return latest
 
 
+def _build_coverage(body: dict) -> dict:
+    threads_out = []
+    for key, state in (body.get("threads") or {}).items():
+        if not isinstance(state, dict):
+            continue
+        threads_out.append({
+            "key": key,
+            "backfill_complete": bool(state.get("backfill_complete")),
+            "lowest_page_fetched": state.get("lowest_page_fetched"),
+            "last_page_fetched": state.get("last_page_fetched"),
+            "thread_slug": state.get("thread_slug"),
+        })
+    return {
+        "threads": threads_out,
+        "post_count": len(body.get("posts") or {}),
+        "coverage_warning": bool(body.get("coverage_warning")),
+    }
+
+
 def ingest_collect_session(body: dict) -> dict:
     target_date = body.get("target_date") or body.get("summary", {}).get("target_date")
     if not target_date:
@@ -143,4 +162,5 @@ def ingest_collect_session(body: dict) -> dict:
         "target_date": target_date,
         "pick_count": count,
         "post_count": len(posts),
+        "coverage": _build_coverage(body),
     }

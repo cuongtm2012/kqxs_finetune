@@ -85,13 +85,35 @@ def strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def strip_quote_blocks(text: str) -> str:
+    """Remove XenForo quote/reply blocks before pick extraction."""
+    out = re.sub(
+        r"[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?Click to expand",
+        " ",
+        text,
+        flags=re.I,
+    )
+    out = re.sub(
+        r'<blockquote[^>]*class="[^"]*quote[^"]*"[^>]*>[\s\S]*?</blockquote>',
+        " ",
+        out,
+        flags=re.I,
+    )
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def latest_day_section(text: str) -> str:
-    # Support both:
-    # - "Ngày 02.07.2026"
+    # Support:
+    # - "Ngày 02.07.2026" / "Ngày 05/7" / "Ngày 05/7/2026"
     # - "2/7" or "02/07/2026" at line start (common shorthand)
     matches = []
     matches.extend(list(re.finditer(r"ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}", text, re.I)))
-    matches.extend(list(re.finditer(r"(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b", text, re.I)))
+    matches.extend(list(re.finditer(
+        r"ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?", text, re.I,
+    )))
+    matches.extend(list(re.finditer(
+        r"(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b", text, re.I,
+    )))
     if not matches:
         return text
     matches.sort(key=lambda m: m.start())
@@ -140,7 +162,7 @@ def extract_stl(text: str) -> list[str]:
     # contain many historical pairs; we only take the latest pair found.
     last: tuple[str, str] | None = None
     for pat in (
-        r"STL[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
+        r"STL[:\s]+(\d{2})\s*[,/.\-]\s*(\d{2})",
         r"CẶP[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
         r"cặp[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})",
     ):
@@ -150,7 +172,20 @@ def extract_stl(text: str) -> list[str]:
 
 
 def extract_btl(text: str) -> list[str]:
-    return sorted({m.group(1) for m in re.finditer(r"BTL[:\s]*(\d{2})", text, re.I)})
+    lines = text.split("\n")
+    last_btl_line = ""
+    for line in lines:
+        if re.search(r"BTL", line, re.I):
+            last_btl_line = line
+    chunk = last_btl_line or text
+    nums: set[str] = set()
+    for m in re.finditer(r"BTL[:\s]+([\d\s,/.\-]+)", chunk, re.I):
+        for n in re.findall(r"\b(\d{2})\b", m.group(1)):
+            if int(n) <= 99:
+                nums.add(n)
+    if not nums:
+        nums = {m.group(1) for m in re.finditer(r"BTL[:\s]*(\d{2})", chunk, re.I)}
+    return sorted(nums)
 
 
 def extract_std_de(text: str) -> list[str]:
@@ -201,19 +236,28 @@ def extract_de_info(text: str) -> dict:
 
 
 def extract_de_list(text: str) -> list[str]:
-    """Extract de numbers from casual format: 'De 11,66,16,61,34,43,37,73,14'
-    Common in khu thao luan daily thread where users post short de lists.
-    Returns sorted unique numbers or empty list if no match."""
+    """Casual đề: 'Đề 11,66' or '4 số : 14,41,78,87'."""
     nums: set[str] = set()
-    for m in re.finditer(r'(?:^|\n)\s*\u0110\u1EC1\s+([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})', text, re.I):
-        for n in re.findall(r'\b(\d{2})\b', m.group(1)):
+    for m in re.finditer(r"4\s*số\s*:\s*([0-9,\s]+)", text, re.I):
+        for n in re.findall(r"\b(\d{2})\b", m.group(1)):
             if 0 <= int(n) <= 99:
                 nums.add(n)
-    for m in re.finditer(r'\u0110\u1EC1\s*[:：]\s*([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})', text, re.I):
-        for n in re.findall(r'\b(\d{2})\b', m.group(1)):
+    for m in re.finditer(r"(?:^|\n)\s*Đề\s+([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})", text, re.I):
+        for n in re.findall(r"\b(\d{2})\b", m.group(1)):
             if 0 <= int(n) <= 99:
                 nums.add(n)
-    return sorted(nums) if len(nums) >= 2 else []
+    for m in re.finditer(r"Đề\s*[:：]\s*([0-9,\s]+?)(?:\n|$|&nbsp|\s{2,})", text, re.I):
+        for n in re.findall(r"\b(\d{2})\b", m.group(1)):
+            if 0 <= int(n) <= 99:
+                nums.add(n)
+    return sorted(nums) if len(nums) >= 2 else sorted(nums)
+
+
+def extract_de_1so(text: str) -> list[str]:
+    nums: set[str] = set()
+    for m in re.finditer(r"1\s*số\s*:\s*(\d{2})\b", text, re.I):
+        nums.add(m.group(1))
+    return sorted(nums)
 
 
 def _parse_btd_numbers(chunk: str) -> list[str]:
@@ -296,7 +340,10 @@ def extract_muc_lo(text: str) -> dict[int, list[str]]:
 
 
 def parse_picks(raw: str, thread_title: str = "") -> dict:
-    scoped = latest_day_section(raw)
+    stripped = strip_quote_blocks(raw)
+    if len(stripped) < 15:
+        return {}
+    scoped = latest_day_section(stripped)
     picks: dict = {}
     stl = extract_stl(scoped)
     if stl:
@@ -308,6 +355,7 @@ def parse_picks(raw: str, thread_title: str = "") -> dict:
     if std_de:
         picks["std_de"] = std_de
     btd_de = extract_btd_de(scoped)
+    btd_de = sorted(set(btd_de) | set(extract_de_1so(scoped)))
     if btd_de:
         picks["btd_de"] = btd_de
     de = extract_de_info(scoped)
@@ -353,6 +401,92 @@ def collect_window_labels(target_date: str) -> tuple[str, str]:
     start = f"{prev.isoformat()}T18:30:00+07:00"
     end = f"{target_date}T18:00:00+07:00"
     return start, end
+
+
+def synthetic_posted_at_ms(target_date: str) -> int:
+    start_ms, end_ms = window_bounds_ms(target_date)
+    return start_ms + max(1, (end_ms - start_ms) // 2)
+
+
+def parse_lan_range_end_date(fragment: str, year: int, month: int) -> Optional[str]:
+    """Parse 'Từ 1-4/6' or 'Từ 30/6' → target_date (last day of khung)."""
+    m = re.search(
+        r"từ\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?\s*/\s*(\d{1,2})\b",
+        fragment,
+        re.I,
+    )
+    if not m:
+        return None
+    d_end = int(m.group(2) or m.group(1))
+    m_in = int(m.group(3))
+    if m_in != month:
+        return None
+    try:
+        d = date(year, month, d_end)
+        if d.weekday() == 6:
+            d -= timedelta(days=1)
+        return d.isoformat()
+    except ValueError:
+        return None
+
+
+def split_chan_nuoi_lan_sections(text: str) -> list[tuple[int, str]]:
+    parts = re.split(r"(?=Lần\s*\d+\s*:)", text, flags=re.I)
+    out: list[tuple[int, str]] = []
+    for part in parts:
+        m = re.match(r"Lần\s*(\d+)\s*:\s*(.*)", part.strip(), re.I | re.S)
+        if m:
+            out.append((int(m.group(1)), m.group(2).strip()))
+    return out
+
+
+def expand_chan_nuoi_posts_by_lan(
+    raw_posts: list[tuple[str, str, RawPost]],
+    year: int,
+    month: int,
+) -> dict[str, list[tuple[str, str, RawPost]]]:
+    """Parse cumulative Lần N blocks in monthly chan nuoi → picks per draw day."""
+    posts_by_user_thread: dict[tuple[str, str], list[RawPost]] = {}
+    for forum, slug, raw in raw_posts:
+        if forum != "chan_nuoi":
+            continue
+        posts_by_user_thread.setdefault((raw.user.lower(), slug), []).append(raw)
+
+    by_date: dict[str, dict[tuple[str, str], tuple[int, tuple[str, str, RawPost]]]] = {}
+
+    for (_user_lower, slug), posts in posts_by_user_thread.items():
+        posts.sort(key=lambda p: int(p.post_id))
+        user = posts[-1].user
+        lan_best: dict[int, tuple[str, list[str]]] = {}
+        for post in posts:
+            for lan_no, section in split_chan_nuoi_lan_sections(post.raw_content):
+                target = parse_lan_range_end_date(section, year, month)
+                if not target:
+                    continue
+                dan = extract_dan_de(section)
+                if len(dan) < 30:
+                    continue
+                lan_best[lan_no] = (target, dan)
+
+        for lan_no, (target, dan) in lan_best.items():
+            scoped = f"Ngày {target}: " + ", ".join(dan)
+            synth = RawPost(
+                post_id=f"{posts[-1].post_id}-lan{lan_no}",
+                user=user,
+                posted_at_ms=synthetic_posted_at_ms(target),
+                raw_content=scoped,
+            )
+            bucket = by_date.setdefault(target, {})
+            pick_key = (user, slug)
+            prev = bucket.get(pick_key)
+            if prev and prev[0] >= lan_no:
+                continue
+            bucket[pick_key] = (lan_no, ("chan_nuoi", slug, synth))
+
+    return {
+        day: [entry[1] for entry in sorted(bucket.values(), key=lambda x: x[0])]
+        for day, bucket in by_date.items()
+    }
 
 
 def crawl_thread_all_pages(slug: str) -> list[RawPost]:

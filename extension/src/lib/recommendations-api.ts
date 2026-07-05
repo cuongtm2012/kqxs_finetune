@@ -1,4 +1,5 @@
 import type { ExtensionSettings } from "../types/forum.js";
+import { apiBases, apiFetch, normalizeApiBase } from "./api-base.js";
 import { getSettings, saveSettings } from "./storage.js";
 
 export interface ForumLotoRow {
@@ -14,13 +15,17 @@ export interface ExpertPerformance {
   hits: number;
   total: number;
   rate_pct: number;
+  low_sample?: boolean;
 }
+
+export type ScoringMode = "weight" | "measured" | "blend";
 
 export interface LiveExpertRow {
   user: string;
   pick_type: string;
   numbers: string[];
   weight: number;
+  effective_weight?: number;
   performance?: ExpertPerformance | null;
   posted_at?: string;
   forum?: string;
@@ -33,6 +38,7 @@ export interface DeChamLeader {
   user: string;
   cham: string[];
   weight?: number;
+  effective_weight?: number;
 }
 
 export interface DanBoardRow {
@@ -41,6 +47,7 @@ export interface DanBoardRow {
   size: string;
   count: number;
   weight: number;
+  effective_weight?: number;
   performance?: ExpertPerformance | null;
   numbers: string[];
   posted_at?: string;
@@ -59,6 +66,7 @@ export interface DeByExpertRow {
   btd_dau: string[];
   forum?: string | null;
   weight: number;
+  effective_weight?: number;
   performance?: ExpertPerformance | null;
 }
 
@@ -91,6 +99,12 @@ export interface ConsensusBlock {
 export interface RecommendationsResponse {
   target_date: string;
   source: "forum";
+  scoring_mode?: ScoringMode;
+  scoring_mode_label?: string;
+  scoring_period?: string;
+  scoring_period_label?: string;
+  performance_period?: string;
+  performance_period_label?: string;
   confidence: number;
   expert_count: number;
   has_forum_session: boolean;
@@ -108,37 +122,31 @@ export interface RecommendationsResponse {
   live_experts: LiveExpertRow[];
 }
 
-const FALLBACK_BASES = [
-  "http://localhost:18715",
-  "http://localhost:8081",
-  "http://127.0.0.1:18715",
-  "http://127.0.0.1:8081",
-];
-
-function apiBases(settings: ExtensionSettings): string[] {
-  const primary = settings.api_base_url.replace(/\/$/, "");
-  return [primary, ...FALLBACK_BASES.filter((b) => b !== primary)];
-}
-
 async function fetchFromBase(
   base: string,
   targetDate: string,
+  scoringMode: ScoringMode,
 ): Promise<RecommendationsResponse> {
-  const url = `${base}/forum/recommendations?target_date=${encodeURIComponent(targetDate)}`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const qs = new URLSearchParams({
+    target_date: targetDate,
+    scoring_mode: scoringMode,
+  });
+  const url = `${base}/forum/recommendations?${qs}`;
+  const res = await apiFetch(url, { headers: { Accept: "application/json" } });
+  if (res.error) throw new Error(res.error);
   if (res.status === 404) {
     throw new Error(`API ${base} thiếu /forum — restart: APP_PORT=18715 python run.py`);
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text.slice(0, 120)}`);
+    throw new Error(`API ${res.status}: ${res.body.slice(0, 120)}`);
   }
-  return res.json() as Promise<RecommendationsResponse>;
+  return JSON.parse(res.body) as RecommendationsResponse;
 }
 
 export async function fetchRecommendations(
   targetDate: string,
   settings?: ExtensionSettings,
+  scoringMode: ScoringMode = "blend",
 ): Promise<RecommendationsResponse> {
   const s = settings || (await getSettings());
   const bases = apiBases(s);
@@ -146,7 +154,7 @@ export async function fetchRecommendations(
 
   for (const base of bases) {
     try {
-      const data = await fetchFromBase(base, targetDate);
+      const data = await fetchFromBase(base, targetDate, scoringMode);
       return data;
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -162,6 +170,7 @@ export async function fetchRecommendations(
 export async function fetchRecommendationsAndSyncUrl(
   targetDate: string,
   settings?: ExtensionSettings,
+  scoringMode: ScoringMode = "blend",
 ): Promise<RecommendationsResponse> {
   const s = settings || (await getSettings());
   const bases = apiBases(s);
@@ -169,9 +178,9 @@ export async function fetchRecommendationsAndSyncUrl(
 
   for (const base of bases) {
     try {
-      const data = await fetchFromBase(base, targetDate);
-      if (base !== s.api_base_url.replace(/\/$/, "")) {
-        await saveSettings({ api_base_url: base });
+      const data = await fetchFromBase(base, targetDate, scoringMode);
+      if (normalizeApiBase(base) !== normalizeApiBase(s.api_base_url)) {
+        await saveSettings({ api_base_url: normalizeApiBase(base) });
       }
       return data;
     } catch (e) {

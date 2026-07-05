@@ -1,7 +1,11 @@
+from unittest.mock import patch
+
 from app.services.forum_recommendation_service import (
+    ScoringContext,
     _aggregate_loto_consensus,
     _de_top4_consensus,
     _pick_xien_2,
+    resolve_scoring_context,
 )
 
 
@@ -15,7 +19,8 @@ def test_consensus_loto_counts_users_not_weights():
         _pick("b", "btl", ["05"]),
         _pick("c", "stl", ["05", "38"]),
     ]
-    ranked = _aggregate_loto_consensus(picks)
+    ctx = resolve_scoring_context("weight")
+    ranked = _aggregate_loto_consensus(picks, ctx)
     top = {r["loto"]: r["score"] for r in ranked}
     assert top["05"] == 3.0
     assert top["16"] == 1.0
@@ -55,6 +60,11 @@ def test_consensus_tiebreak_prefers_low_weight_at_one_vote():
         _pick("heavy", "btl", ["05", "16"]),
         _pick("light", "stl", ["38"]),
     ]
-    ranked = _aggregate_loto_consensus(picks)
-    # heavy default weight 0.3, light default 0.3 — same weight, sort by loto
-    assert ranked[0]["loto"] in {"05", "16", "38"}
+    ctx = ScoringContext(mode="weight", period_label="rolling_90d")
+    with patch(
+        "app.services.forum_recommendation_service.expert_weight",
+        side_effect=lambda u, pt: 0.9 if u == "heavy" else 0.1,
+    ):
+        ranked = _aggregate_loto_consensus(picks, ctx)
+    # 1 phiếu: số từ cao thủ trọng số thấp (light → 38) xếp trước
+    assert ranked[0]["loto"] == "38"

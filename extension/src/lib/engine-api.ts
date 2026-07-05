@@ -1,4 +1,5 @@
 import type { ExtensionSettings } from "../types/forum.js";
+import { apiBases, apiFetchJson, normalizeApiBase } from "./api-base.js";
 import { getSettings, saveSettings } from "./storage.js";
 
 export interface CandidateRow {
@@ -72,25 +73,8 @@ export interface EngineBundle {
   predictions: PredictionsResponse | null;
 }
 
-const FALLBACK_BASES = [
-  "http://localhost:18715",
-  "http://localhost:8081",
-  "http://127.0.0.1:18715",
-  "http://127.0.0.1:8081",
-];
-
-function apiBases(settings: ExtensionSettings): string[] {
-  const primary = settings.api_base_url.replace(/\/$/, "");
-  return [primary, ...FALLBACK_BASES.filter((b) => b !== primary)];
-}
-
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text.slice(0, 160)}`);
-  }
-  return res.json() as Promise<T>;
+  return apiFetchJson<T>(url, { headers: { Accept: "application/json" } });
 }
 
 async function fetchEngineFromBase(base: string): Promise<EngineBundle> {
@@ -152,8 +136,8 @@ export async function fetchEngineBundle(settings?: ExtensionSettings): Promise<E
   for (const base of bases) {
     try {
       const data = await fetchEngineFromBase(base);
-      if (base !== s.api_base_url.replace(/\/$/, "")) {
-        await saveSettings({ api_base_url: base });
+      if (normalizeApiBase(base) !== normalizeApiBase(s.api_base_url)) {
+        await saveSettings({ api_base_url: normalizeApiBase(base) });
       }
       return data;
     } catch (e) {

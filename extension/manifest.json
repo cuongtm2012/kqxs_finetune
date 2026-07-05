@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Forum Collector",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Thu thập pick XSMB từ forumketqua.net (mở bát, thảo luận, chăn nuôi)",
   "permissions": ["alarms", "storage", "downloads", "cookies", "scripting", "tabs"],
   "host_permissions": [
     "https://forumketqua.net/*",
-    "http://localhost:18715/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
     "http://127.0.0.1:18715/*",
-    "http://localhost:8081/*",
-    "http://127.0.0.1:8081/*"
+    "http://localhost:18715/*",
+    "http://127.0.0.1:8081/*",
+    "http://localhost:8081/*"
   ],
   "background": {
     "service_worker": "background.js",

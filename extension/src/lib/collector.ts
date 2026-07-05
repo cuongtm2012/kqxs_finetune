@@ -1,12 +1,11 @@
-import type { CollectSession, DiscoveredThread, ForumKey } from "../types/forum.js";
+import type { CollectSession, DiscoveredThread, ForumKey, ThreadState } from "../types/forum.js";
 import {
   getCollectWindow,
   getNextRolloverMs,
   getTargetDate,
   getWindowBoundsMs,
-  isAfterResultCutoff,
   isInCollectWindow,
-  isSunday,
+  isPastFinalizeGrace,
   shouldFinalize,
 } from "./date-window.js";
 import { ensureLoggedIn, fetchForumHtml } from "./forum-auth.js";
@@ -28,13 +27,17 @@ import {
 } from "./storage.js";
 import type { ExtensionSettings } from "../types/forum.js";
 
+const DAILY_FORUMS = new Set<ForumKey>(["mo_bat", "thao_luan"]);
+
 async function finalizeCollectSession(
   session: CollectSession,
   settings: ExtensionSettings,
+  coverageWarning = false,
 ): Promise<void> {
   if (session.finalized_at) return;
   session.summary = buildSummary(session, settings);
   session.finalized_at = new Date().toISOString();
+  session.coverage_warning = coverageWarning;
   await saveSession(session);
   if (settings.auto_sync) {
     await syncSessionToApi(session);
@@ -46,6 +49,42 @@ function threadStorageKey(forum: ForumKey, slug: string): string {
 }
 
 const CRAWL_COOLDOWN_MS = 5 * 60 * 1000;
+
+function needsBackfill(state: ThreadState): boolean {
+  return !state.backfill_complete && (state.lowest_page_fetched ?? 1) > 1;
+}
+
+function dailyThreadsNeedBackfill(
+  session: CollectSession,
+  threads: DiscoveredThread[],
+): boolean {
+  for (const thread of threads) {
+    if (!DAILY_FORUMS.has(thread.forum)) continue;
+    const key = threadStorageKey(thread.forum, thread.slug);
+    const state = session.threads[key];
+    if (!state || needsBackfill(state)) return true;
+  }
+  return false;
+}
+
+function canFinalizeSession(
+  session: CollectSession,
+  threads: DiscoveredThread[],
+  now: Date,
+  targetDate: string,
+  timeZone: string,
+): { allow: boolean; coverageWarning: boolean } {
+  if (!shouldFinalize(now, targetDate, timeZone)) {
+    return { allow: false, coverageWarning: false };
+  }
+  if (!dailyThreadsNeedBackfill(session, threads)) {
+    return { allow: true, coverageWarning: false };
+  }
+  if (isPastFinalizeGrace(now, targetDate, timeZone)) {
+    return { allow: true, coverageWarning: true };
+  }
+  return { allow: false, coverageWarning: false };
+}
 
 async function resolveThreads(
   targetDate: string,
@@ -69,6 +108,26 @@ async function loadOrCreateSession(targetDate: string): Promise<CollectSession> 
   return emptySession(targetDate, window_start, window_end);
 }
 
+async function fetchAndMergePage(
+  thread: DiscoveredThread,
+  session: CollectSession,
+  page: number,
+  pageUrlFor: (page: number) => string,
+  startMs: number,
+  endMs: number,
+  firstHtml: string,
+): Promise<{ added: number; minTs: number; rowCount: number }> {
+  const url = pageUrlFor(page);
+  const html = page === 1 || url === thread.url ? firstHtml : await fetchForumHtml(url);
+  const rows = extractPostsFromHtml(html);
+  const posts = toForumPosts(rows, thread.forum, thread.slug, startMs, endMs, thread.title);
+  const added = mergePosts(session, posts);
+  const minTs = rows.length
+    ? Math.min(...rows.map((r) => r.posted_at_ms || Number.MAX_SAFE_INTEGER))
+    : Number.MAX_SAFE_INTEGER;
+  return { added, minTs, rowCount: rows.length };
+}
+
 async function crawlThreadPage(
   thread: DiscoveredThread,
   session: CollectSession,
@@ -87,13 +146,16 @@ async function crawlThreadPage(
       last_page_fetched: 0,
       lowest_page_fetched: undefined,
       backfill_complete: false,
+      pages_fetched_total: 0,
     };
     session.threads[key] = state;
   }
 
   const now = Date.now();
+  const pendingBackfill = needsBackfill(state);
   if (
     !force &&
+    !pendingBackfill &&
     state.last_fetch_at &&
     now - state.last_fetch_at < CRAWL_COOLDOWN_MS &&
     state.last_page_fetched > 0
@@ -103,22 +165,38 @@ async function crawlThreadPage(
 
   const firstHtml = await fetchForumHtml(thread.url);
   const lastPage = getLastPageFromHtml(firstHtml);
+  const prevLastPage = state.last_page_fetched || 0;
 
   const pageUrlFor = (page: number): string =>
     page > 1 ? thread.url.replace(/\/?$/, `/page-${page}`) : thread.url;
 
-  const MAX_PAGES_PER_CYCLE = force ? 999 : 25; // avoid runaway threads; daily threads typically <= 15 pages
+  const MAX_PAGES_PER_CYCLE = force ? 999 : 25;
   let pagesFetched = 0;
   let totalAdded = 0;
 
-  // Always fetch last page to get newest posts
-  const lastUrl = pageUrlFor(lastPage);
-  const lastHtml = lastUrl === thread.url ? firstHtml : await fetchForumHtml(lastUrl);
-  pagesFetched += 1;
+  const bumpPageCount = () => {
+    pagesFetched += 1;
+    state.pages_fetched_total = (state.pages_fetched_total || 0) + 1;
+  };
 
+  // Thread grew — fetch new middle pages before the old last page
+  if (prevLastPage > 0 && lastPage > prevLastPage) {
+    for (let page = prevLastPage + 1; page < lastPage && pagesFetched < MAX_PAGES_PER_CYCLE; page += 1) {
+      const { added } = await fetchAndMergePage(
+        thread, session, page, pageUrlFor, startMs, endMs, firstHtml,
+      );
+      totalAdded += added;
+      bumpPageCount();
+    }
+  }
+
+  // Always fetch last page for newest posts
+  const lastUrl = pageUrlFor(lastPage);
+  const lastHtml = lastPage === 1 || lastUrl === thread.url ? firstHtml : await fetchForumHtml(lastUrl);
   const lastRows = extractPostsFromHtml(lastHtml);
   const lastPosts = toForumPosts(lastRows, thread.forum, thread.slug, startMs, endMs, thread.title);
   totalAdded += mergePosts(session, lastPosts);
+  bumpPageCount();
 
   for (const p of lastPosts) {
     if (p.posted_at_ms > state.last_post_time) state.last_post_time = p.posted_at_ms;
@@ -127,41 +205,40 @@ async function crawlThreadPage(
   state.last_page_fetched = lastPage;
   state.last_fetch_at = now;
 
-  // Backfill older pages to avoid confusing counts + improve recommendations
   if (force) state.backfill_complete = false;
   if (state.lowest_page_fetched == null) state.lowest_page_fetched = lastPage;
+  if ((state.lowest_page_fetched ?? lastPage) > lastPage) {
+    state.lowest_page_fetched = lastPage;
+  }
 
   const shouldBackfill =
     !state.backfill_complete &&
-    startMs > 0 && // no need for infinite window
+    startMs > 0 &&
     lastPage > 1 &&
-    state.lowest_page_fetched > 1;
+    (state.lowest_page_fetched ?? lastPage) > 1;
 
-  if (!shouldBackfill) return totalAdded;
+  if (shouldBackfill) {
+    for (
+      let page = Math.min((state.lowest_page_fetched ?? lastPage) - 1, lastPage - 1);
+      page >= 1;
+      page -= 1
+    ) {
+      if (pagesFetched >= MAX_PAGES_PER_CYCLE) break;
+      const { added, minTs, rowCount } = await fetchAndMergePage(
+        thread, session, page, pageUrlFor, startMs, endMs, firstHtml,
+      );
+      totalAdded += added;
+      bumpPageCount();
 
-  // Crawl backwards until we reach window start (or hit max pages)
-  for (let page = Math.min(state.lowest_page_fetched - 1, lastPage - 1); page >= 1; page -= 1) {
-    if (pagesFetched >= MAX_PAGES_PER_CYCLE) break;
-    const url = pageUrlFor(page);
-    const html = await fetchForumHtml(url);
-    pagesFetched += 1;
-
-    const rows = extractPostsFromHtml(html);
-    if (!rows.length) {
       state.lowest_page_fetched = page;
-      continue;
+      if (rowCount === 0) continue;
+      if (minTs < startMs || page === 1) {
+        state.backfill_complete = true;
+        break;
+      }
     }
-
-    const posts = toForumPosts(rows, thread.forum, thread.slug, startMs, endMs, thread.title);
-    totalAdded += mergePosts(session, posts);
-
-    // Stop once this page already contains older-than-window content (earlier pages are even older)
-    const minTs = Math.min(...rows.map((r) => r.posted_at_ms || Number.MAX_SAFE_INTEGER));
-    state.lowest_page_fetched = page;
-    if (minTs < startMs || page === 1) {
-      state.backfill_complete = true;
-      break;
-    }
+  } else if (lastPage <= 1) {
+    state.backfill_complete = true;
   }
 
   return totalAdded;
@@ -178,18 +255,14 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   if (rolledOver) {
     const prevSession = await getSession(runtime.target_date);
     if (prevSession) {
-      await finalizeCollectSession(prevSession, settings);
+      const prevThreads = prevSession.discovered_threads || [];
+      const { allow, coverageWarning } = canFinalizeSession(
+        prevSession, prevThreads, now, runtime.target_date, settings.timezone,
+      );
+      if (allow || prevSession.finalized_at) {
+        await finalizeCollectSession(prevSession, settings, coverageWarning);
+      }
     }
-  }
-
-  if (isSunday(targetDate)) {
-    await patchRuntimeStatus({
-      target_date: targetDate,
-      collect_status: "sunday_skip",
-      new_posts_last_poll: 0,
-      last_poll_status: "sunday_skip",
-    });
-    return { added: 0, status: "sunday_skip" };
   }
 
   const loggedIn = await ensureLoggedIn();
@@ -208,14 +281,18 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     session.discovered_threads = undefined;
   }
   const inWindow = isInCollectWindow(now, targetDate, settings.timezone);
-  const finalize = !force && shouldFinalize(now, targetDate, settings.timezone);
 
-  if (!force && (session.finalized_at || finalize)) {
-    session.summary = buildSummary(session, settings);
-    if (!session.finalized_at) {
-      await finalizeCollectSession(session, settings);
-    }
-    await saveSession(session);
+  const threadsEarly = await resolveThreads(
+    targetDate,
+    session,
+    settings.pinned_chan_nuoi_patterns,
+    force || rolledOver,
+  );
+  const finalizeCheck = canFinalizeSession(
+    session, threadsEarly, now, targetDate, settings.timezone,
+  );
+
+  if (!force && session.finalized_at) {
     await patchRuntimeStatus({
       target_date: targetDate,
       collect_status: "finalized",
@@ -227,7 +304,23 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     return { added: 0, status: "finalized" };
   }
 
-  if (!force && !inWindow) {
+  if (!force && finalizeCheck.allow) {
+    session.summary = buildSummary(session, settings);
+    await finalizeCollectSession(session, settings, finalizeCheck.coverageWarning);
+    await saveSession(session);
+    await patchRuntimeStatus({
+      target_date: targetDate,
+      collect_status: "finalized",
+      post_count: Object.keys(session.posts).length,
+      new_posts_last_poll: 0,
+      last_poll_at: new Date().toISOString(),
+      last_poll_status: finalizeCheck.coverageWarning ? "finalized_coverage_warning" : "finalized",
+    });
+    return { added: 0, status: "finalized" };
+  }
+
+  const afterFinalizeTime = shouldFinalize(now, targetDate, settings.timezone);
+  if (!force && !inWindow && !afterFinalizeTime) {
     await patchRuntimeStatus({
       target_date: targetDate,
       collect_status: "idle",
@@ -242,12 +335,7 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   const { startMs, endMs } = force
     ? { startMs: 0, endMs: Number.MAX_SAFE_INTEGER }
     : getWindowBoundsMs(targetDate, settings.timezone);
-  const threads = await resolveThreads(
-    targetDate,
-    session,
-    settings.pinned_chan_nuoi_patterns,
-    force || rolledOver,
-  );
+  const threads = threadsEarly;
 
   if (!threads.some((t) => t.forum === "thao_luan")) {
     await patchRuntimeStatus({
@@ -280,17 +368,24 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   }
   await pruneOldSessions();
 
+  const stillBackfilling = dailyThreadsNeedBackfill(session, threads);
+  const collectStatus = stillBackfilling && afterFinalizeTime ? "backfilling" : "collecting";
+
   await patchRuntimeStatus({
     target_date: targetDate,
-    collect_status: "collecting",
+    collect_status: collectStatus,
     post_count: Object.keys(session.posts).length,
     new_posts_last_poll: totalAdded,
     last_poll_at: new Date().toISOString(),
     last_error: undefined,
-    last_poll_status: rolledOver ? "rolled_over" : `collecting (+${totalAdded})`,
+    last_poll_status: rolledOver
+      ? "rolled_over"
+      : stillBackfilling && afterFinalizeTime
+        ? `backfilling (+${totalAdded})`
+        : `collecting (+${totalAdded})`,
   });
 
-  return { added: totalAdded, status: "collecting" };
+  return { added: totalAdded, status: collectStatus };
 }
 
 export async function setupAlarms(): Promise<void> {
@@ -298,7 +393,8 @@ export async function setupAlarms(): Promise<void> {
   const now = new Date();
   const targetDate = getTargetDate(now, settings.timezone);
   const inWindow = isInCollectWindow(now, targetDate, settings.timezone);
-  const minutes = inWindow
+  const afterFinalize = shouldFinalize(now, targetDate, settings.timezone);
+  const minutes = inWindow || afterFinalize
     ? settings.poll_interval_active_min
     : settings.poll_interval_idle_min;
 

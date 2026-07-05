@@ -1,17 +1,6 @@
 import type { CollectSession } from "../types/forum.js";
+import { apiBases, apiFetch, normalizeApiBase } from "./api-base.js";
 import { getSettings, patchRuntimeStatus, saveSettings } from "./storage.js";
-
-const FALLBACK_BASES = [
-  "http://localhost:18715",
-  "http://localhost:8081",
-  "http://127.0.0.1:18715",
-  "http://127.0.0.1:8081",
-];
-
-function apiBases(primary: string): string[] {
-  const base = primary.replace(/\/$/, "");
-  return [base, ...FALLBACK_BASES.filter((b) => b !== base)];
-}
 
 export async function pushSessionToApi(
   session: CollectSession,
@@ -21,26 +10,28 @@ export async function pushSessionToApi(
   if (!options.force && !settings.auto_sync) return false;
 
   let lastError = "";
-  for (const base of apiBases(settings.api_base_url)) {
+  for (const base of apiBases(settings)) {
     const url = `${base}/forum/picks`;
     try {
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(session),
       });
+      if (res.error) {
+        lastError = res.error;
+        continue;
+      }
       if (res.status === 404) {
         lastError = `API ${base} thiếu /forum — restart: APP_PORT=18715 python run.py`;
         continue;
       }
-      const ok = res.ok;
-      if (!ok) {
-        const text = await res.text();
-        lastError = `HTTP ${res.status}: ${text.slice(0, 120)}`;
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}: ${res.body.slice(0, 120)}`;
         continue;
       }
-      if (base !== settings.api_base_url.replace(/\/$/, "")) {
-        await saveSettings({ api_base_url: base });
+      if (normalizeApiBase(base) !== normalizeApiBase(settings.api_base_url)) {
+        await saveSettings({ api_base_url: normalizeApiBase(base) });
       }
       await patchRuntimeStatus({
         last_sync_status: `OK ${new Date().toISOString()}`,

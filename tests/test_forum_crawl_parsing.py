@@ -51,8 +51,8 @@ def test_btl_extracts_single_number():
 
 
 def test_btl_ignores_multiple():
-    """Nếu BTL ghi '05 16 27' → chỉ lấy số đầu '05'."""
-    assert extract_btl("BTL: 05 16 27") == ["05"]  # behavior hiện tại
+    """BTL line with multiple numbers — lấy tất cả số 2 chữ số trên dòng BTL cuối."""
+    assert extract_btl("BTL: 05 16 27") == ["05", "16", "27"]
 
 
 def test_btd_extracts_dac_biet():
@@ -74,17 +74,12 @@ def test_btd_dau_mixed_with_non_b():
 
 
 def test_btd_only_takes_latest_day():
-    """Chỉ lấy BTD của ngày cuối.
-    Lưu ý: parse_picks gộp tất cả match ('b02,12' + 'b05,38') vì
-    latest_day_section parse format 'Ngày 1/7:' cần regex cụ thể.
-    Behavior hiện tại: không lọc riêng từng ngày, chỉ gộp toàn bộ."""
+    """Chỉ lấy BTD của ngày cuối (latest_day_section)."""
     text = """Ngày 1/7: Đề đặc biệt: b02,12
     Ngày 2/7: Đề đặc biệt: b05,38"""
     picks = parse_picks(text)
-    # behavior hiện tại: gộp cả 2 ngày
-    assert "02" in picks.get("btd", [])
-    assert "05" in picks.get("btd", [])
-    assert "38" in picks.get("btd", [])
+    assert picks.get("btd") == ["05", "38"]
+    assert "02" not in picks.get("btd", [])
 
 
 def test_std_de_variations():
@@ -217,3 +212,16 @@ def test_parse_picks_dan_de():
 def test_empty_text_returns_empty():
     picks = parse_picks("")
     assert picks == {}
+
+
+def test_parse_lan_range_end_date():
+    from app.services.forum_crawl_service import parse_lan_range_end_date
+
+    assert parse_lan_range_end_date("Từ 1-4/6", 2026, 6) == "2026-06-04"
+    assert parse_lan_range_end_date("Từ 30/6", 2026, 6) == "2026-06-30"
+
+
+def test_parse_lan_range_end_date_sunday_snaps_to_saturday():
+    from app.services.forum_crawl_service import parse_lan_range_end_date
+
+    assert parse_lan_range_end_date("Từ 6-7/6", 2026, 6) == "2026-06-06"

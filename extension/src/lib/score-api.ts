@@ -1,4 +1,5 @@
 import type { ExtensionSettings } from "../types/forum.js";
+import { apiBases, apiFetch, normalizeApiBase } from "./api-base.js";
 import { getSettings } from "./storage.js";
 
 export interface DrawScoreResultRow {
@@ -12,12 +13,27 @@ export interface DrawScoreResultRow {
   evaluated_at?: string;
 }
 
+export interface ScoreCoverageThread {
+  key: string;
+  backfill_complete?: boolean;
+  lowest_page_fetched?: number;
+  last_page_fetched?: number;
+  thread_slug?: string;
+}
+
+export interface ScoreCoverage {
+  threads?: ScoreCoverageThread[];
+  post_count?: number;
+  coverage_warning?: boolean;
+}
+
 export interface DrawScoreResponse {
   target_date: string;
   ok: boolean;
   error?: string;
   cutoff?: string;
   imported?: boolean;
+  coverage?: ScoreCoverage;
   draw?: {
     de?: string | null;
     db?: string | null;
@@ -33,23 +49,23 @@ export interface DrawScoreResponse {
   results?: DrawScoreResultRow[];
 }
 
-const FALLBACK_BASES = [
-  "http://localhost:18715",
-  "http://127.0.0.1:18715",
-];
-
-function apiBases(settings: ExtensionSettings): string[] {
-  const primary = settings.api_base_url.replace(/\/$/, "");
-  return [primary, ...FALLBACK_BASES.filter((b) => b !== primary)];
-}
-
-async function fetchJson(base: string, path: string): Promise<DrawScoreResponse> {
-  const res = await fetch(`${base}${path}`, { headers: { Accept: "application/json" } });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text.slice(0, 120)}`);
+async function fetchJson(
+  base: string,
+  path: string,
+  method: "GET" | "POST" = "GET",
+): Promise<DrawScoreResponse> {
+  const res = await apiFetch(`${base}${path}`, {
+    method,
+    headers: { Accept: "application/json" },
+  });
+  if (res.error) throw new Error(res.error);
+  if (res.status === 404) {
+    throw new Error(`API ${base} thiếu /forum/score — restart: APP_PORT=18715 python run.py`);
   }
-  return res.json() as Promise<DrawScoreResponse>;
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${res.body.slice(0, 120)}`);
+  }
+  return JSON.parse(res.body) as DrawScoreResponse;
 }
 
 export async function fetchDrawScore(
@@ -78,7 +94,7 @@ export async function runDrawScore(
   let lastError: Error | null = null;
   for (const base of apiBases(s)) {
     try {
-      return await fetchJson(base, path);
+      return await fetchJson(base, path, "POST");
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
     }

@@ -133,7 +133,8 @@ def score_draw_day(
         expert_winrate_repo.replace_pick_results(pick_rows)
 
     total = len(results)
-    return {
+    coverage = _session_coverage(target_date)
+    payload: dict[str, Any] = {
         "target_date": target_date,
         "ok": True,
         "cutoff": draw_cutoff_iso(target_date),
@@ -151,6 +152,9 @@ def score_draw_day(
         },
         "results": results,
     }
+    if coverage:
+        payload["coverage"] = coverage
+    return payload
 
 
 def run_daily_settlement(
@@ -162,16 +166,34 @@ def run_daily_settlement(
     if not target_date:
         target_date = datetime.now(TZ).date().isoformat()
 
-    if datetime.now(TZ).weekday() == 6:
-        return {"target_date": target_date, "ok": False, "error": "sunday_skip"}
-
     imported = import_draw_for_day(target_date, prefer_mketqua=prefer_mketqua)
     if imported:
         draw_repo.refresh_loto_view()
 
     scored = score_draw_day(target_date, write_results=True, require_draw=True)
     scored["imported"] = imported
+
+    try:
+        from app.services.expert_winrate_service import refresh_period
+
+        rolling = refresh_period("rolling_90d", dry_run=False)
+        scored["rolling_90d_refresh"] = {
+            "rows_upserted": rolling.get("rows_upserted", 0),
+        }
+    except Exception as exc:
+        logger.warning("rolling_90d refresh failed: %s", exc)
+        scored["rolling_90d_refresh"] = {"error": str(exc)}
+
     return scored
+
+
+def _session_coverage(target_date: str) -> dict | None:
+    session = forum_repo.get_session(target_date)
+    if not session:
+        return None
+    payload = session.get("payload") or {}
+    from app.services.forum_ingest_service import _build_coverage
+    return _build_coverage(payload)
 
 
 def get_scored_day(target_date: str) -> dict[str, Any]:
@@ -188,7 +210,8 @@ def get_scored_day(target_date: str) -> dict[str, Any]:
 
     hits = sum(1 for r in rows if r.get("hit"))
     total = len(rows)
-    return {
+    coverage = _session_coverage(target_date)
+    out: dict[str, Any] = {
         "target_date": target_date,
         "ok": bool(rows),
         "cutoff": draw_cutoff_iso(target_date),
@@ -204,3 +227,6 @@ def get_scored_day(target_date: str) -> dict[str, Any]:
         },
         "results": rows,
     }
+    if coverage:
+        out["coverage"] = coverage
+    return out

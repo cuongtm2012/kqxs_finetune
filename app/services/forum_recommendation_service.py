@@ -1,13 +1,57 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from app.repositories.forum_repo import forum_repo
-from app.services.expert_scorer import dedupe_picks_by_user, expert_performance, expert_weight, live_experts
+from app.services.expert_scorer import (
+    DEFAULT_SCORING_MODE,
+    SCORING_MODES,
+    dedupe_picks_by_user,
+    expert_effective_weight,
+    expert_performance,
+    expert_weight,
+    live_experts,
+)
+from app.services.expert_winrate_service import DEFAULT_PERIOD_LABEL, period_display_label
 
+SCORING_MODE_LABELS = {
+    "blend": "Effective (blend)",
+    "weight": "W thủ công",
+    "measured": "Hiệu suất đo được",
+}
 
 DAN_PICK_TYPES = frozenset({"dan_de", "dan_40s", "dan_36s", "dan_64s"})
 DAN_SIZE_LABELS = {"dan_40s": "40s", "dan_36s": "36s", "dan_64s": "64s", "dan_de": "dàn"}
+
+
+@dataclass(frozen=True)
+class ScoringContext:
+    mode: str
+    period_label: str
+
+    def scoring_w(self, user: str, pick_type: str) -> float:
+        if self.mode == "weight":
+            return expert_weight(user, pick_type)
+        return expert_effective_weight(
+            user, pick_type, mode=self.mode, period_label=self.period_label,
+        )
+
+    def effective_w(self, user: str, pick_type: str) -> float:
+        return expert_effective_weight(
+            user, pick_type, mode=self.mode, period_label=self.period_label,
+        )
+
+
+def resolve_scoring_context(
+    scoring_mode: str | None = None,
+    performance_period: str | None = None,
+) -> ScoringContext:
+    mode = (scoring_mode or DEFAULT_SCORING_MODE).strip().lower()
+    if mode not in SCORING_MODES:
+        raise ValueError(f"Invalid scoring_mode: {mode!r}; use weight|measured|blend")
+    period = performance_period or DEFAULT_PERIOD_LABEL
+    return ScoringContext(mode=mode, period_label=period)
 
 
 def _infer_dan_pick_type_from_row(pick: dict) -> str:
@@ -30,7 +74,7 @@ def _infer_dan_pick_type_from_row(pick: dict) -> str:
     return "dan_de"
 
 
-def _collect_dan_board(picks: list[dict]) -> list[dict]:
+def _collect_dan_board(picks: list[dict], ctx: ScoringContext) -> list[dict]:
     rows: list[dict] = []
     for p in picks:
         pt = p.get("pick_type", "")
@@ -40,34 +84,44 @@ def _collect_dan_board(picks: list[dict]) -> list[dict]:
         if len(nums) < 20:
             continue
         resolved = _infer_dan_pick_type_from_row(p)
-        w = expert_weight(p["username"], "dan_de")
-        perf = expert_performance(p["username"], "dan_de")
+        w = expert_weight(p["username"], resolved)
+        eff = ctx.effective_w(p["username"], resolved)
+        perf = expert_performance(p["username"], resolved, ctx.period_label)
         rows.append({
             "user": p["username"],
             "pick_type": resolved,
             "size": DAN_SIZE_LABELS.get(resolved, "dàn"),
             "count": len(nums),
             "weight": round(w, 3),
+            "effective_weight": eff,
             "performance": perf,
             "numbers": nums,
             "posted_at": p.get("posted_at"),
             "forum": p.get("forum"),
         })
-    rows.sort(key=lambda x: (-x["weight"], x["size"], x["user"]))
+    if ctx.mode == "weight":
+        rows.sort(key=lambda x: (-x["weight"], x["size"], x["user"]))
+    else:
+        rows.sort(key=lambda x: (-x["effective_weight"], x["size"], x["user"]))
     return rows
 
 
-def _live_experts_no_dan(picks: list[dict]) -> list[dict]:
+def _live_experts_no_dan(picks: list[dict], ctx: ScoringContext) -> list[dict]:
     filtered = [p for p in picks if p.get("pick_type") not in DAN_PICK_TYPES]
-    return live_experts(filtered)
+    return live_experts(
+        filtered, scoring_mode=ctx.mode, period_label=ctx.period_label,
+    )
 
 
-def _collect_de_by_expert(picks: list[dict], dan_board: list[dict]) -> list[dict]:
+def _collect_de_by_expert(
+    picks: list[dict], dan_board: list[dict], ctx: ScoringContext,
+) -> list[dict]:
     """Tóm tắt chốt đề theo từng cao thủ — dàn + chạm/đầu/tổng."""
     users: dict[str, dict] = {}
 
     def ensure(user: str) -> dict:
         if user not in users:
+            w = expert_weight(user, "dan_de")
             users[user] = {
                 "user": user,
                 "dan_size": None,
@@ -79,8 +133,9 @@ def _collect_de_by_expert(picks: list[dict], dan_board: list[dict]) -> list[dict
                 "btd": [],
                 "btd_dau": [],
                 "forum": None,
-                "weight": round(expert_weight(user, "dan_de"), 3),
-                "performance": expert_performance(user, "dan_de"),
+                "weight": round(w, 3),
+                "effective_weight": ctx.effective_w(user, "dan_de"),
+                "performance": expert_performance(user, "dan_de", ctx.period_label),
             }
         return users[user]
 
@@ -92,6 +147,7 @@ def _collect_de_by_expert(picks: list[dict], dan_board: list[dict]) -> list[dict
         entry["dan_count"] = row["count"]
         entry["dan_preview"] = nums[:15]
         entry["weight"] = row.get("weight") or entry["weight"]
+        entry["effective_weight"] = row.get("effective_weight") or entry["effective_weight"]
         entry["performance"] = row.get("performance") or entry["performance"]
         if row.get("forum"):
             entry["forum"] = row["forum"]
@@ -116,7 +172,8 @@ def _collect_de_by_expert(picks: list[dict], dan_board: list[dict]) -> list[dict
         elif pt == "btd_dau":
             entry["btd_dau"] = nums
         entry["weight"] = round(expert_weight(u, pt), 3)
-        perf = expert_performance(u, pt)
+        entry["effective_weight"] = ctx.effective_w(u, pt)
+        perf = expert_performance(u, pt, ctx.period_label)
         if perf:
             entry["performance"] = perf
 
@@ -124,7 +181,10 @@ def _collect_de_by_expert(picks: list[dict], dan_board: list[dict]) -> list[dict
         r for r in users.values()
         if r["dan_count"] or r["de_cham"] or r["de_dau"] or r["de_tong"] or r["btd"] or r["btd_dau"]
     ]
-    rows.sort(key=lambda x: (-x["weight"], -(x["dan_count"] or 0), x["user"]))
+    if ctx.mode == "weight":
+        rows.sort(key=lambda x: (-x["weight"], -(x["dan_count"] or 0), x["user"]))
+    else:
+        rows.sort(key=lambda x: (-x["effective_weight"], -(x["dan_count"] or 0), x["user"]))
     return rows
 
 
@@ -153,14 +213,14 @@ def _norm_loto(num: str) -> str:
     return str(num).zfill(2) if len(str(num)) <= 2 else str(num)
 
 
-def _aggregate_loto_scores(picks: list[dict]) -> list[dict]:
+def _aggregate_loto_scores(picks: list[dict], ctx: ScoringContext) -> list[dict]:
     scores: dict[str, dict] = {}
     for p in dedupe_picks_by_user(picks):
         pt = p.get("pick_type", "")
         if pt not in LOTO_PICK_TYPES:
             continue
         user = p["username"]
-        w = expert_weight(user, pt)
+        w = ctx.scoring_w(user, pt)
         for num in p.get("numbers") or []:
             n = _norm_loto(num)
             if n not in scores:
@@ -179,7 +239,7 @@ def _aggregate_loto_scores(picks: list[dict]) -> list[dict]:
     return rows
 
 
-def _aggregate_loto_consensus(picks: list[dict]) -> list[dict]:
+def _aggregate_loto_consensus(picks: list[dict], ctx: ScoringContext) -> list[dict]:
     """Đồng thuận lô: mỗi cao thủ +1 phiếu / số. Hòa phiếu: ưu tiên số cao thủ ít trọng số."""
     scores: dict[str, dict] = {}
     for p in dedupe_picks_by_user(picks):
@@ -187,7 +247,7 @@ def _aggregate_loto_consensus(picks: list[dict]) -> list[dict]:
         if pt not in LOTO_PICK_TYPES:
             continue
         user = p["username"]
-        w = expert_weight(user, pt)
+        w = ctx.scoring_w(user, pt)
         for num in p.get("numbers") or []:
             n = _norm_loto(num)
             if n not in scores:
@@ -225,13 +285,13 @@ def _aggregate_loto_consensus(picks: list[dict]) -> list[dict]:
     return rows
 
 
-def _best_btl(picks: list[dict]) -> str | None:
+def _best_btl(picks: list[dict], ctx: ScoringContext) -> str | None:
     best_num: str | None = None
     best_w = -1.0
     for p in picks:
         if p.get("pick_type") != "btl":
             continue
-        w = expert_weight(p["username"], "btl")
+        w = ctx.scoring_w(p["username"], "btl")
         for num in p.get("numbers") or []:
             n = str(num).zfill(2) if len(str(num)) <= 2 else str(num)
             if w > best_w:
@@ -240,9 +300,10 @@ def _best_btl(picks: list[dict]) -> str | None:
     return best_num
 
 
-def _best_btl_consensus(picks: list[dict]) -> str | None:
+def _best_btl_consensus(picks: list[dict], ctx: ScoringContext) -> str | None:
     ranked = _aggregate_loto_consensus(
         [p for p in dedupe_picks_by_user(picks) if p.get("pick_type") == "btl"],
+        ctx,
     )
     btl_only = [r for r in ranked if "btl" in r.get("types", [])]
     return btl_only[0]["loto"] if btl_only else None
@@ -253,7 +314,7 @@ def _norm_de(n: str) -> str:
     return s.zfill(2) if len(s) <= 2 else s
 
 
-def _de_cham_leaders(picks: list[dict], forum: dict) -> list[dict]:
+def _de_cham_leaders(picks: list[dict], forum: dict, ctx: ScoringContext) -> list[dict]:
     leaders: list[dict] = []
     for p in picks:
         if p.get("pick_type") != "de_cham":
@@ -261,23 +322,38 @@ def _de_cham_leaders(picks: list[dict], forum: dict) -> list[dict]:
         cham = [str(x) for x in (p.get("numbers") or [])]
         if not cham:
             continue
+        w = expert_weight(p["username"], "de_cham")
         leaders.append({
             "user": p["username"],
             "cham": cham,
-            "weight": round(expert_weight(p["username"], "de_cham"), 3),
+            "weight": round(w, 3),
+            "effective_weight": ctx.effective_w(p["username"], "de_cham"),
         })
-    leaders.sort(key=lambda x: (-x["weight"], x["user"]))
+    if ctx.mode == "weight":
+        leaders.sort(key=lambda x: (-x["weight"], x["user"]))
+    else:
+        leaders.sort(key=lambda x: (-x["effective_weight"], x["user"]))
     if leaders:
         return leaders
     return list(forum.get("de_cham_leaders") or [])
 
 
-def _de_top4(picks: list[dict], forum: dict, dan_board: list[dict] | None = None) -> list[str]:
+def _de_top4(
+    picks: list[dict],
+    forum: dict,
+    dan_board: list[dict] | None,
+    ctx: ScoringContext,
+) -> list[str]:
     de_scores: dict[str, float] = {}
     dan_pool: set[str] = set()
 
     for row in dan_board or []:
-        w = row.get("weight") or expert_weight(row["user"], "dan_de")
+        if ctx.mode == "weight":
+            w = row.get("weight") or expert_weight(row["user"], row.get("pick_type", "dan_de"))
+        else:
+            w = row.get("effective_weight") or ctx.scoring_w(
+                row["user"], row.get("pick_type", "dan_de"),
+            )
         for num in row.get("numbers") or []:
             n = _norm_de(num)
             dan_pool.add(n)
@@ -286,7 +362,7 @@ def _de_top4(picks: list[dict], forum: dict, dan_board: list[dict] | None = None
     for p in picks:
         pt = p.get("pick_type", "")
         if pt == "btd":
-            w = expert_weight(p["username"], "btd")
+            w = ctx.scoring_w(p["username"], "btd")
             for num in p.get("numbers") or []:
                 n = _norm_de(num)
                 dan_pool.add(n)
@@ -294,7 +370,7 @@ def _de_top4(picks: list[dict], forum: dict, dan_board: list[dict] | None = None
             continue
         if pt not in DAN_PICK_TYPES:
             continue
-        w = expert_weight(p["username"], "dan_de")
+        w = ctx.scoring_w(p["username"], pt if pt != "dan_de" else "dan_de")
         for num in p.get("numbers") or []:
             n = _norm_de(num)
             dan_pool.add(n)
@@ -308,12 +384,12 @@ def _de_top4(picks: list[dict], forum: dict, dan_board: list[dict] | None = None
     for p in picks:
         if p.get("pick_type") != "de_cham":
             continue
-        w = expert_weight(p["username"], "de_cham")
+        w = ctx.scoring_w(p["username"], "de_cham")
         for d in p.get("numbers") or []:
             cham_weight[str(d)] = max(cham_weight.get(str(d), 0.0), w)
 
     for entry in forum.get("de_cham_leaders") or []:
-        w = expert_weight(entry.get("user", ""), "de_cham")
+        w = ctx.scoring_w(entry.get("user", ""), "de_cham")
         for d in entry.get("cham") or []:
             cham_weight[str(d)] = max(cham_weight.get(str(d), 0.0), w)
 
@@ -429,15 +505,24 @@ def _consensus_stats(
     }
 
 
-def _forum_confidence(experts: list[dict]) -> float:
+def _forum_confidence(experts: list[dict], ctx: ScoringContext) -> float:
     if not experts:
         return 0.0
-    avg_w = sum(e["weight"] for e in experts) / len(experts)
+    if ctx.mode == "weight":
+        avg_w = sum(e["weight"] for e in experts) / len(experts)
+    else:
+        avg_w = sum(e.get("effective_weight", e["weight"]) for e in experts) / len(experts)
     return round(min(1.0, 0.15 + len(experts) * 0.06 + avg_w * 0.25), 2)
 
 
-def build_recommendations(target_date: str) -> dict[str, Any]:
+def build_recommendations(
+    target_date: str,
+    *,
+    scoring_mode: str | None = None,
+    performance_period: str | None = None,
+) -> dict[str, Any]:
     """Đề xuất chỉ từ cao thủ chốt số (không dùng engine)."""
+    ctx = resolve_scoring_context(scoring_mode, performance_period)
     session = forum_repo.get_session(target_date)
     forum = forum_repo.summary_dict_from_picks(target_date)
     forum["target_date"] = target_date
@@ -468,29 +553,38 @@ def build_recommendations(target_date: str) -> dict[str, Any]:
             p.update(post_to_thread[pid])
 
     picks_rows = dedupe_picks_by_user(raw_picks)
-    dan_board = _collect_dan_board(picks_rows)
-    experts = _live_experts_no_dan(picks_rows)
-    all_experts = live_experts(picks_rows)
+    dan_board = _collect_dan_board(picks_rows, ctx)
+    experts = _live_experts_no_dan(picks_rows, ctx)
+    all_experts = live_experts(
+        picks_rows, scoring_mode=ctx.mode, period_label=ctx.period_label,
+    )
 
-    ranked_loto = _aggregate_loto_scores(picks_rows)
-    ranked_consensus = _aggregate_loto_consensus(picks_rows)
-    btl_lo = _best_btl(picks_rows) or (ranked_loto[0]["loto"] if ranked_loto else None)
-    btl_consensus = _best_btl_consensus(picks_rows) or (
+    ranked_loto = _aggregate_loto_scores(picks_rows, ctx)
+    ranked_consensus = _aggregate_loto_consensus(picks_rows, ctx)
+    btl_lo = _best_btl(picks_rows, ctx) or (ranked_loto[0]["loto"] if ranked_loto else None)
+    btl_consensus = _best_btl_consensus(picks_rows, ctx) or (
         ranked_consensus[0]["loto"] if ranked_consensus else None
     )
-    de_top = _de_top4(picks_rows, forum, dan_board)
+    de_top = _de_top4(picks_rows, forum, dan_board, ctx)
     de_consensus = _de_top4_consensus(picks_rows, forum, dan_board)
-    cham_leaders = _de_cham_leaders(picks_rows, forum)
+    cham_leaders = _de_cham_leaders(picks_rows, forum, ctx)
     cham_consensus = _de_cham_consensus(picks_rows, forum)
 
     expert_bao = [h["loto"] for h in ranked_loto[:9]]
     consensus_bao = [h["loto"] for h in ranked_consensus[:9]]
     consensus_stats = _consensus_stats(ranked_consensus, expert_bao, consensus_bao)
 
+    period_label = ctx.period_label
     return {
         "target_date": target_date,
         "source": "forum",
-        "confidence": _forum_confidence(all_experts),
+        "scoring_mode": ctx.mode,
+        "scoring_mode_label": SCORING_MODE_LABELS.get(ctx.mode, ctx.mode),
+        "scoring_period": period_label,
+        "scoring_period_label": period_display_label(period_label),
+        "performance_period": period_label,
+        "performance_period_label": period_display_label(period_label),
+        "confidence": _forum_confidence(all_experts, ctx),
         "expert_count": len(all_experts),
         "has_forum_session": session is not None,
         "picks": {
@@ -511,7 +605,7 @@ def build_recommendations(target_date: str) -> dict[str, Any]:
             "stats": consensus_stats,
         },
         "dan_board": dan_board,
-        "de_by_expert": _collect_de_by_expert(picks_rows, dan_board),
+        "de_by_expert": _collect_de_by_expert(picks_rows, dan_board, ctx),
         "de_cham_leaders": cham_leaders,
         "forum_loto_top10": ranked_loto[:10],
         "live_experts": experts,

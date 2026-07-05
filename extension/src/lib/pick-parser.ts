@@ -1,17 +1,30 @@
 import type { PostPicks } from "../types/forum.js";
 
+/** Remove XenForo quote/reply blocks — avoids parsing quoted picks from other users. */
+export function stripQuoteBlocks(text: string): string {
+  let out = text;
+  // "User nói: ↑ ... Click to expand"
+  out = out.replace(
+    /[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?Click to expand/gi,
+    " ",
+  );
+  // HTML quote blocks if any raw tags remain
+  out = out.replace(/<blockquote[^>]*class="[^"]*quote[^"]*"[^>]*>[\s\S]*?<\/blockquote>/gi, " ");
+  return out.replace(/\s+/g, " ").trim();
+}
+
 function latestDaySection(text: string): string {
-  // Support both:
-  // - "Ngày 02.07.2026"
-  // - "2/7" or "02/07/2026" (common shorthand in TL posts)
-  const re1 = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}/gi;
-  const re2 = /(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b/gi;
-  const matches = [...text.matchAll(re1), ...text.matchAll(re2)].sort(
+  // Support:
+  // - "Ngày 02.07.2026" / "Ngày 05/7" / "Ngày 05/7/2026"
+  // - "2/7" or "02/07/2026" at line start (common shorthand in TL posts)
+  const reFull = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}/gi;
+  const reNgayShort = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?/gi;
+  const reLine = /(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b/gi;
+  const matches = [...text.matchAll(reFull), ...text.matchAll(reNgayShort), ...text.matchAll(reLine)].sort(
     (a, b) => (a.index ?? 0) - (b.index ?? 0),
   );
   if (!matches.length) return text;
   const last = matches[matches.length - 1];
-  // If there is only one date marker, still scope to it: treat post as multi-day log.
   return text.slice(last.index ?? 0).trim();
 }
 
@@ -20,7 +33,7 @@ export function extractStl(text: string): string[] {
   // Monthly "nuôi khung" threads often contain many historical pairs; we only take the latest pair found.
   let lastPair: [string, string] | null = null;
   const patterns = [
-    /STL[:\s]+(\d{2})\s*[,/\-]\s*(\d{2})/gi,
+    /STL[:\s]+(\d{2})\s*[,/.\-]\s*(\d{2})/gi,
     // Common forum patterns:
     // "CẶP: 39-97", "CẶP: Lần 1: 39-97", "CẶP ... Lần 1 : 29,92"
     /CẶP[:\s]+(?:Lần\s*\d+\s*[:\s]+)?(\d{2})\s*[,/\-]\s*(\d{2})/gi,
@@ -39,10 +52,24 @@ export function extractStl(text: string): string[] {
 }
 
 export function extractBtl(text: string): string[] {
+  // Event / thống kê posts often log multiple days; take numbers from the last BTL line only.
+  const lines = text.split(/\n/);
+  let lastBtlLine = "";
+  for (const line of lines) {
+    if (/BTL/i.test(line)) lastBtlLine = line;
+  }
+  const chunk = lastBtlLine || text;
   const nums = new Set<string>();
-  const re = /BTL[:\s]*(\d{2})/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) nums.add(m[1]);
+  for (const m of chunk.matchAll(/BTL[:\s]+([\d\s,/.\-]+)/gi)) {
+    for (const n of m[1].matchAll(/\b(\d{2})\b/g)) {
+      if (Number(n[1]) <= 99) nums.add(n[1]);
+    }
+  }
+  if (!nums.size) {
+    const re = /BTL[:\s]*(\d{2})/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(chunk)) !== null) nums.add(m[1]);
+  }
   return [...nums].sort();
 }
 
@@ -179,6 +206,24 @@ export function danSizeLabel(pickType: string): string {
   return "dàn";
 }
 
+export function extractDeList(text: string): string[] {
+  const nums = new Set<string>();
+  for (const m of text.matchAll(/4\s*số\s*:\s*([0-9,\s]+)/gi)) {
+    for (const n of m[1].matchAll(/\b(\d{2})\b/g)) {
+      if (Number(n[1]) <= 99) nums.add(n[1]);
+    }
+  }
+  return [...nums].sort();
+}
+
+export function extractDe1So(text: string): string[] {
+  const nums = new Set<string>();
+  for (const m of text.matchAll(/1\s*số\s*:\s*(\d{2})\b/gi)) {
+    nums.add(m[1]);
+  }
+  return [...nums].sort();
+}
+
 export function extractDanDe(text: string): string[] {
   const nums = [...text.matchAll(/\b(\d{2})\b/g)].map((m) => m[1]);
   const valid = nums.filter((n) => Number(n) >= 0 && Number(n) <= 99);
@@ -208,7 +253,9 @@ export function extractMucLo(text: string): Record<number, string[]> {
 }
 
 export function parsePicksFromContent(raw: string, threadTitle = ""): PostPicks {
-  const scoped = latestDaySection(raw);
+  const stripped = stripQuoteBlocks(raw);
+  if (stripped.length < 15) return {};
+  const scoped = latestDaySection(stripped);
   const picks: PostPicks = {};
   const stl = extractStl(scoped);
   if (stl.length) picks.stl = stl;
@@ -216,7 +263,11 @@ export function parsePicksFromContent(raw: string, threadTitle = ""): PostPicks 
   if (btl.length) picks.btl = btl;
   const stdDe = extractStdDe(scoped);
   if (stdDe.length) picks.std_de = stdDe;
-  const btdDe = extractBtdDe(scoped);
+  let btdDe = extractBtdDe(scoped);
+  const de1 = extractDe1So(scoped);
+  if (de1.length) {
+    btdDe = [...new Set([...btdDe, ...de1])].sort();
+  }
   if (btdDe.length) picks.btd_de = btdDe;
   const de = extractDeInfo(scoped);
   if (de && (de.cham.length || de.tong.length || de.dau.length)) picks.de = de;
@@ -224,6 +275,8 @@ export function parsePicksFromContent(raw: string, threadTitle = ""): PostPicks 
   if (btd.length) picks.btd = btd;
   const btdDau = extractBtdDau(scoped);
   if (btdDau.length) picks.btd_dau = btdDau;
+  const deList = extractDeList(scoped);
+  if (deList.length) picks.de_list = deList;
   const dan = extractDanDe(scoped);
   if (dan.length) {
     picks.dan_de = dan;

@@ -9,9 +9,11 @@ import { fetchRecommendationsAndSyncUrl } from "../lib/recommendations-api.js";
 import type { DrawScoreResponse } from "../lib/score-api.js";
 import { fetchDrawScore, runDrawScore } from "../lib/score-api.js";
 import { pushSessionToApi } from "../lib/api-client.js";
-import { getCalendarDate, getCollectWindow, getLatestDrawScoreDate, getTargetDate, isAfterResultCutoff } from "../lib/date-window.js";
+import { ensureApiOnline, resolveWorkingApiBase } from "../lib/api-base.js";
+import { getCalendarDate, getCollectWindow, getLatestDrawScoreDate, getTargetDate, isAfterDrawSettlement, isAfterResultCutoff } from "../lib/date-window.js";
 import type { EngineBundle } from "../lib/engine-api.js";
 import { fetchEngineBundle } from "../lib/engine-api.js";
+import type { ScoringMode } from "../lib/recommendations-api.js";
 import {
   clearSession,
   ensureConfigSeeded,
@@ -19,9 +21,14 @@ import {
   getRuntimeStatus,
   getSession,
   getSettings,
+  getRecoExpertSort,
+  getRecoScoringMode,
   listSessionDates,
+  saveRecoExpertSort,
+  saveRecoScoringMode,
 } from "../lib/storage.js";
 import type { CollectSession } from "../types/forum.js";
+import type { RecoExpertSortMode, RecoScoringMode } from "../lib/storage.js";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -39,6 +46,7 @@ function esc(s: string | number | undefined | null): string {
 function badgeClass(status: string): string {
   const map: Record<string, string> = {
     collecting: "collecting",
+    backfilling: "collecting",
     finalized: "finalized",
     waiting_thread: "waiting",
     sunday_skip: "sunday",
@@ -57,6 +65,18 @@ function authLabel(status: string): string {
   return map[status] || status;
 }
 
+function collectStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    idle: "Chờ",
+    collecting: "Đang thu thập",
+    backfilling: "Đang backfill",
+    finalized: "Đã chốt",
+    waiting_thread: "Chờ topic",
+    sunday_skip: "Đang thu thập",
+  };
+  return map[status] || status;
+}
+
 function pollStatusLabel(status: string): string {
   const map: Record<string, string> = {
     collecting: "Đang thu thập",
@@ -64,7 +84,9 @@ function pollStatusLabel(status: string): string {
     waiting_thread: "Chưa có topic thảo luận",
     outside_window: "Ngoài khung giờ",
     finalized: "Đã chốt",
-    sunday_skip: "Chủ nhật — bỏ qua",
+    finalized_coverage_warning: "Đã chốt (thiếu backfill)",
+    backfilling: "Đang backfill trang cũ",
+    sunday_skip: "Đang thu thập",
     rolled_over: "Đã chuyển ngày quay",
   };
   return map[status] || status;
@@ -142,6 +164,18 @@ let recoLoading = false;
 let lastRecoTarget = "";
 let engineLoading = false;
 let scoreLoading = false;
+
+function setScoreLoading(active: boolean): void {
+  scoreLoading = active;
+  const btn = $("btn-refresh-score");
+  const runBtn = $("btn-run-score");
+  const label = btn.querySelector(".btn-label");
+  btn.disabled = active;
+  runBtn.disabled = active;
+  btn.classList.toggle("loading", active);
+  runBtn.classList.toggle("loading", active);
+  if (label) label.textContent = active ? "Đang tải…" : "Tải kết quả";
+}
 
 type TabName = "collect" | "reco" | "engine" | "score";
 
@@ -243,9 +277,39 @@ function renderScore(data: DrawScoreResponse): void {
     : "—";
 
   const hint = $("score-cutoff-hint");
+  const postCount = data.coverage?.post_count;
+  const baseHint = postCount != null
+    ? `Chấm ${summary?.total ?? 0} pick từ Thu thập (${postCount} post). Chỉ tính pick chốt trước 18:00 (ICT).`
+    : `Chỉ tính pick chốt trước 18:00 (ICT)`;
   if (data.cutoff) {
-    hint.textContent = `Chỉ tính pick chốt trước 18:00 · cutoff ${new Date(data.cutoff).toLocaleString("vi-VN")}`;
+    hint.textContent = `${baseHint} · cutoff ${new Date(data.cutoff).toLocaleString("vi-VN")}`;
     hint.classList.remove("hidden");
+  } else {
+    hint.textContent = baseHint;
+  }
+
+  const covHint = $("score-coverage-hint");
+  const incomplete = (data.coverage?.threads || []).filter((t) => t.backfill_complete === false);
+  if (incomplete.length) {
+    const parts = incomplete.map((t) => {
+      const low = t.lowest_page_fetched ?? "?";
+      const high = t.last_page_fetched ?? "?";
+      const label = t.key === "thao_luan" ? "Thảo luận" : t.key === "mo_bat" ? "Mở bát" : t.key;
+      return `${label}: ${low}/${high} trang`;
+    });
+    covHint.textContent = `⚠ Backfill chưa xong (${parts.join(", ")}) — có thể thiếu pick sớm. Poll ở tab Thu thập rồi Chấm lại.`;
+    covHint.classList.remove("hidden", "ok");
+    covHint.classList.add("warn");
+    covHint.hidden = false;
+  } else if (data.coverage?.coverage_warning) {
+    covHint.textContent = "Session chốt khi backfill chưa hoàn tất — một số pick có thể thiếu.";
+    covHint.classList.remove("hidden", "ok");
+    covHint.classList.add("warn");
+    covHint.hidden = false;
+  } else {
+    covHint.textContent = "";
+    covHint.classList.add("hidden");
+    covHint.hidden = true;
   }
 
   const tbody = $("score-rows");
@@ -253,7 +317,7 @@ function renderScore(data: DrawScoreResponse): void {
   if (!data.ok || !rows.length) {
     const msg =
       data.error === "not_scored"
-        ? "Chưa chấm — sau 18:31 bấm Tải kết quả hoặc Chấm lại"
+        ? "Chưa chấm — bấm Tải kết quả (sau 18:31 sẽ tự chấm) hoặc Chấm lại"
         : data.error === "no_draw"
           ? "Chưa có KQXS — thử Chấm lại (mketqua)"
           : "Chưa có dữ liệu đối chiếu";
@@ -284,21 +348,28 @@ function renderScore(data: DrawScoreResponse): void {
 
 async function loadScore(forceRun: boolean): Promise<void> {
   if (scoreLoading) return;
-  scoreLoading = true;
-  const settings = await getSettings();
+  setScoreLoading(true);
+  const now = new Date();
   $("score-error").classList.add("hidden");
-  const btn = $("btn-refresh-score");
-  const runBtn = $("btn-run-score");
-  btn.disabled = true;
-  runBtn.disabled = true;
 
   try {
-    let drawDate = getDrawScoreDate(new Date(), settings.timezone);
+    const settings = await ensureApiOnline(await getSettings());
+    let drawDate = getDrawScoreDate(now, settings.timezone);
+
     let data = forceRun
       ? await runDrawScore(drawDate, settings)
       : await fetchDrawScore(drawDate, settings);
 
-    if (!forceRun && data.error === "not_scored") {
+    if (
+      !forceRun &&
+      !data.ok &&
+      data.error === "not_scored" &&
+      isAfterDrawSettlement(now, settings.timezone)
+    ) {
+      data = await runDrawScore(drawDate, settings);
+    }
+
+    if (!forceRun && !data.ok && data.error === "not_scored") {
       const [y, m, d] = drawDate.split("-").map(Number);
       const prev = new Date(Date.UTC(y, m - 1, d));
       prev.setUTCDate(prev.getUTCDate() - 1);
@@ -317,9 +388,7 @@ async function loadScore(forceRun: boolean): Promise<void> {
     err.textContent = msg;
     err.classList.remove("hidden");
   } finally {
-    btn.disabled = false;
-    runBtn.disabled = false;
-    scoreLoading = false;
+    setScoreLoading(false);
   }
 }
 
@@ -648,30 +717,15 @@ function setupDanCopyHandlers(): void {
     if (!btn) return;
     const nums = (btn.getAttribute("data-nums") || "").trim();
     if (!nums) return;
-    try {
-      await navigator.clipboard.writeText(nums);
-      const prev = btn.textContent || "";
-      btn.textContent = "Đã copy";
-      setTimeout(() => {
-        btn.textContent = prev;
-      }, 900);
-    } catch {
-      // fallback for restricted clipboard
-      const ta = document.createElement("textarea");
-      ta.value = nums;
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
+    await copyTextToClipboard(nums);
+    await flashCopyButton(btn);
   });
 }
 
-function formatPerformance(perf?: { hits: number; total: number; rate_pct: number } | null): string {
+function formatPerformance(perf?: { hits: number; total: number; rate_pct: number; low_sample?: boolean } | null): string {
   if (!perf?.total) return "—";
-  return `${perf.rate_pct}% (${perf.hits}/${perf.total})`;
+  const star = perf.low_sample ? "*" : "";
+  return `${perf.rate_pct}% (${perf.hits}/${perf.total})${star}`;
 }
 
 function formatStlPair(nums: string[]): string {
@@ -784,6 +838,170 @@ const PICK_BUCKET_LABELS: Record<PickBucket, string> = {
 };
 
 let currentPickWhoMap = new Map<string, string[]>();
+let lastRecommendationsForCopy: RecommendationsResponse | null = null;
+let recoExpertSort: RecoExpertSortMode = "effective";
+let recoScoringMode: RecoScoringMode = "blend";
+
+function sortLiveExperts(experts: LiveExpertRow[]): LiveExpertRow[] {
+  const rows = [...experts];
+  if (recoExpertSort === "performance") {
+    rows.sort((a, b) => {
+      const ar = a.performance?.rate_pct ?? -1;
+      const br = b.performance?.rate_pct ?? -1;
+      if (br !== ar) return br - ar;
+      const at = a.performance?.total ?? 0;
+      const bt = b.performance?.total ?? 0;
+      if (bt !== at) return bt - at;
+      return a.user.localeCompare(b.user);
+    });
+  } else if (recoExpertSort === "effective") {
+    rows.sort((a, b) => {
+      const ar = a.effective_weight ?? a.weight;
+      const br = b.effective_weight ?? b.weight;
+      if (br !== ar) return br - ar;
+      return a.user.localeCompare(b.user);
+    });
+  } else {
+    rows.sort((a, b) => b.weight - a.weight || a.user.localeCompare(b.user));
+  }
+  return rows;
+}
+
+function updateRecoExpertSortUi(): void {
+  $("btn-sort-experts-weight").classList.toggle("active", recoExpertSort === "weight");
+  $("btn-sort-experts-perf").classList.toggle("active", recoExpertSort === "performance");
+  $("btn-sort-experts-effective").classList.toggle("active", recoExpertSort === "effective");
+}
+
+function updateRecoScoringModeUi(): void {
+  $("btn-scoring-blend").classList.toggle("active", recoScoringMode === "blend");
+  $("btn-scoring-weight").classList.toggle("active", recoScoringMode === "weight");
+  $("btn-scoring-measured").classList.toggle("active", recoScoringMode === "measured");
+}
+
+function renderLiveExpertsTable(experts: LiveExpertRow[]): void {
+  const tbody = $("reco-experts-rows");
+  if (!experts.length) {
+    tbody.innerHTML = "<tr><td colspan='8' class='muted'>Chưa có cao thủ chốt (poll + sync API)</td></tr>";
+    return;
+  }
+  const showEff = recoScoringMode !== "weight";
+  tbody.innerHTML = sortLiveExperts(experts)
+    .slice(0, 20)
+    .map((e) => {
+      const tag = fmtForumTag(e.forum);
+      const label = PICK_LABELS[e.pick_type] || e.pick_type;
+      const nums =
+        e.pick_type === "std_de"
+          ? (e.numbers || []).join(" / ")
+          : (e.numbers || []).join(", ");
+      const topic = e.thread_url
+        ? `<a class="muted" href="${e.thread_url}" target="_blank" rel="noreferrer">threads/${(e.thread_id || "").slice(0, 18)}${(e.thread_id || "").length > 18 ? "…" : ""}</a>`
+        : "—";
+      const eff = e.effective_weight ?? e.weight;
+      const effCell = showEff ? `<td>${eff.toFixed(2)}</td>` : "<td class='muted'>—</td>";
+      return `<tr data-user="${e.user}" data-forum="${e.forum || ""}">
+        <td><strong>${e.user}</strong></td>
+        <td>${tag ? `<span class="forum-tag forum-tag-${tag.toLowerCase()}">${tag}</span>` : "—"}</td>
+        <td>${topic}</td>
+        <td>${label}</td>
+        <td class="nums">${nums}</td>
+        <td>${formatPerformance(e.performance)}</td>
+        <td>${e.weight}</td>
+        ${effCell}
+      </tr>`;
+    })
+    .join("");
+}
+
+function joinOrDash(items: string[], sep = ", "): string {
+  return items.length ? items.join(sep) : "—";
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+}
+
+async function flashCopyButton(btn: HTMLButtonElement): Promise<void> {
+  const prev = btn.textContent || "Copy";
+  btn.textContent = "Đã copy";
+  btn.classList.add("copied");
+  await new Promise((r) => setTimeout(r, 900));
+  btn.textContent = prev;
+  btn.classList.remove("copied");
+}
+
+function formatExpertPanelCopy(data: RecommendationsResponse, targetDate: string): string {
+  const picks = data.picks;
+  const cham = [
+    ...new Set((data.de_cham_leaders || []).flatMap((c) => c.cham.map((d) => String(d).trim()))),
+  ];
+  const lines = [
+    `Theo cao thủ (trọng số) · ${formatTargetDateLabel(targetDate)}`,
+    `BTL lô: ${picks.btl_lo || "—"}`,
+    `Bao lô 9: ${joinOrDash(picks.bao_lo_9 || [])}`,
+    `Xiên 2: ${joinOrDash(picks.xien_2 || [], " / ")}`,
+    `Đề top 4: ${joinOrDash(picks.de_top_4 || [])}`,
+    `Chạm đề: ${joinOrDash(cham)}`,
+  ];
+  return lines.join("\n");
+}
+
+function formatConsensusPanelCopy(data: RecommendationsResponse, targetDate: string): string {
+  const consensus = data.consensus;
+  if (!consensus?.picks) {
+    return `Theo đồng thuận (số người chốt) · ${formatTargetDateLabel(targetDate)}\nChưa có dữ liệu`;
+  }
+  const voteMap = buildVoteMap(consensus.loto_top10 || []);
+  const bao = (consensus.picks.bao_lo_9 || []).map((n) => {
+    const v = voteMap.get(n);
+    return v && v >= 2 ? `${n}×${v}` : n;
+  });
+  const cham = (consensus.de_cham || []).map((c) => {
+    const votes = c.votes ?? 0;
+    return votes >= 2 ? `${c.cham}×${votes}` : String(c.cham);
+  });
+  const lines = [
+    `Theo đồng thuận (số người chốt) · ${formatTargetDateLabel(targetDate)}`,
+    `BTL lô: ${consensus.picks.btl_lo || "—"}`,
+    `Bao lô 9: ${joinOrDash(bao)}`,
+    `Xiên 2: ${joinOrDash(consensus.picks.xien_2 || [], " / ")}`,
+    `Đề top 4: ${joinOrDash(consensus.picks.de_top_4 || [])}`,
+    `Chạm đề: ${joinOrDash(cham)}`,
+  ];
+  return lines.join("\n");
+}
+
+function setupRecoPanelCopyHandlers(): void {
+  $("btn-copy-reco-expert").addEventListener("click", async () => {
+    const btn = $("btn-copy-reco-expert") as HTMLButtonElement;
+    const data = lastRecommendationsForCopy;
+    if (!data) return;
+    const target = data.target_date || $("reco-target-date").textContent || "";
+    await copyTextToClipboard(formatExpertPanelCopy(data, target));
+    await flashCopyButton(btn);
+  });
+
+  $("btn-copy-reco-consensus").addEventListener("click", async () => {
+    const btn = $("btn-copy-reco-consensus") as HTMLButtonElement;
+    const data = lastRecommendationsForCopy;
+    if (!data) return;
+    const target = data.target_date || $("reco-target-date").textContent || "";
+    await copyTextToClipboard(formatConsensusPanelCopy(data, target));
+    await flashCopyButton(btn);
+  });
+}
 
 function normToken(bucket: PickBucket, token: string): string {
   const t = (token || "").trim();
@@ -1038,6 +1256,7 @@ function clearRecoPicks(): void {
   $("reco-consensus-hint").hidden = true;
   const tbody = $("reco-experts-rows");
   tbody.innerHTML = "<tr><td colspan='7' class='muted'>Chưa có dữ liệu — API trả ngày cũ, cần poll forum cho ngày mới</td></tr>";
+  lastRecommendationsForCopy = null;
 }
 
 function renderRecommendations(
@@ -1136,36 +1355,12 @@ function renderRecommendations(
   renderDeByExpert(data);
   renderDanBoard(data.dan_board || []);
 
-  const tbody = $("reco-experts-rows");
-  if (!data.live_experts.length) {
-    tbody.innerHTML = "<tr><td colspan='7' class='muted'>Chưa có cao thủ chốt (poll + sync API)</td></tr>";
-  } else {
-    tbody.innerHTML = data.live_experts
-      .slice(0, 20)
-      .map(
-        (e) => {
-          const tag = fmtForumTag(e.forum);
-          const label = PICK_LABELS[e.pick_type] || e.pick_type;
-          const nums =
-            e.pick_type === "std_de"
-              ? (e.numbers || []).join(" / ")
-              : (e.numbers || []).join(", ");
-          const topic = e.thread_url
-            ? `<a class="muted" href="${e.thread_url}" target="_blank" rel="noreferrer">threads/${(e.thread_id || "").slice(0, 18)}${(e.thread_id || "").length > 18 ? "…" : ""}</a>`
-            : "—";
-          return `<tr data-user="${e.user}" data-forum="${e.forum || ""}">
-            <td><strong>${e.user}</strong></td>
-            <td>${tag ? `<span class="forum-tag forum-tag-${tag.toLowerCase()}">${tag}</span>` : "—"}</td>
-            <td>${topic}</td>
-            <td>${label}</td>
-            <td class="nums">${nums}</td>
-            <td>${formatPerformance(e.performance)}</td>
-            <td>${e.weight}</td>
-          </tr>`;
-        },
-      )
-      .join("");
-  }
+  const periodLabel = data.scoring_period_label || data.performance_period_label || "90 ngày gần nhất";
+  const modeLabel = data.scoring_mode_label || recoScoringMode;
+  $("reco-experts-legend").textContent =
+    `W = trọng số thủ công · Hiệu suất = hit/total (${periodLabel}) · Đề xuất số: ${modeLabel} · * mẫu nhỏ`;
+
+  renderLiveExpertsTable(data.live_experts || []);
 
   renderTopLotoExperts(data.live_experts || []);
 
@@ -1184,6 +1379,7 @@ function renderRecommendations(
   }
 
   $("reco-error").classList.add("hidden");
+  lastRecommendationsForCopy = data;
 }
 
 function renderCandidateTable(
@@ -1295,12 +1491,11 @@ function renderEngine(data: EngineBundle, settings: Awaited<ReturnType<typeof ge
 async function loadEngine(): Promise<void> {
   if (engineLoading) return;
 
-  const settings = await getSettings();
-
   $("engine-error").classList.add("hidden");
   setEngineLoading(true, "Kết nối Stats Engine…");
 
   try {
+    const settings = await ensureApiOnline(await getSettings());
     const data = await fetchEngineBundle(settings);
     renderEngine(data, settings);
   } catch (e) {
@@ -1316,16 +1511,17 @@ async function loadEngine(): Promise<void> {
 async function loadRecommendations(options: { forcePoll?: boolean } = {}): Promise<void> {
   if (recoLoading) return;
 
-  const settings = await getSettings();
   const now = new Date();
-  const target = getTargetDate(now, settings.timezone);
-  const afterCutoff = isAfterResultCutoff(now, settings.timezone);
-  lastRecoTarget = target;
+  lastRecoTarget = getTargetDate(now, (await getSettings()).timezone);
 
   $("reco-error").classList.add("hidden");
   startRecoLoadingAnimation();
 
   try {
+    const settings = await ensureApiOnline(await getSettings());
+    const target = getTargetDate(now, settings.timezone);
+    lastRecoTarget = target;
+    const afterCutoff = isAfterResultCutoff(now, settings.timezone);
     const runtime = await getRuntimeStatus();
     const rolledOver = Boolean(runtime.target_date && runtime.target_date !== target);
     let session = await getSession(target);
@@ -1333,7 +1529,7 @@ async function loadRecommendations(options: { forcePoll?: boolean } = {}): Promi
       options.forcePoll || rolledOver || needsPollForTarget(target, runtime, session, afterCutoff);
 
     $("reco-loading-text").textContent = "Lấy pick cao thủ…";
-    let data = await fetchRecommendationsAndSyncUrl(target, settings);
+    let data = await fetchRecommendationsAndSyncUrl(target, settings, recoScoringMode);
     const dataIsFresh = data.target_date === target;
     const hasApiData = Boolean(data.has_forum_session || data.expert_count > 0);
 
@@ -1417,7 +1613,7 @@ async function refreshUi(): Promise<void> {
   const afterCutoff = isAfterResultCutoff(now, settings.timezone);
 
   const badge = $("status-badge");
-  badge.textContent = runtime.collect_status;
+  badge.textContent = collectStatusLabel(runtime.collect_status);
   badge.className = `badge ${badgeClass(runtime.collect_status)}`;
 
   $("target-date").textContent = target;
@@ -1429,7 +1625,30 @@ async function refreshUi(): Promise<void> {
   $("last-poll").textContent = runtime.last_poll_at
     ? new Date(runtime.last_poll_at).toLocaleString("vi-VN")
     : "—";
-  $("last-poll-status").textContent = runtime.last_poll_status || "—";
+  $("last-poll-status").textContent = runtime.last_poll_status
+    ? pollStatusLabel(runtime.last_poll_status)
+    : "—";
+
+  const session = await getSession(target);
+  const backfillEl = $("backfill-status");
+  if (session?.threads) {
+    const dailyKeys = ["thao_luan", "mo_bat"] as const;
+    const lines: string[] = [];
+    for (const dk of dailyKeys) {
+      const st = session.threads[dk];
+      if (!st) continue;
+      const low = st.lowest_page_fetched ?? st.last_page_fetched ?? "?";
+      const high = st.last_page_fetched ?? "?";
+      if (st.backfill_complete) {
+        lines.push(`${dk === "thao_luan" ? "TL" : "MB"}: ✓`);
+      } else {
+        lines.push(`${dk === "thao_luan" ? "TL" : "MB"}: ${low}/${high} ↓`);
+      }
+    }
+    backfillEl.textContent = lines.length ? lines.join(" · ") : "—";
+  } else {
+    backfillEl.textContent = "—";
+  }
 
   $("auth-status-short").textContent =
     runtime.auth_status === "logged_in"
@@ -1450,6 +1669,18 @@ async function refreshUi(): Promise<void> {
   $("cfg-username").textContent = auth.username || "—";
   $("cfg-password").textContent = maskPassword(auth.password);
   $("cfg-api-url").textContent = settings.api_base_url;
+  const apiStatus = $("cfg-api-status");
+  const apiPing = await resolveWorkingApiBase(settings);
+  if (apiPing.online) {
+    apiStatus.textContent = "Online";
+    apiStatus.className = "api-status online";
+    if (apiPing.base) $("cfg-api-url").textContent = apiPing.base;
+  } else {
+    apiStatus.textContent = apiPing.error
+      ? `Offline (${apiPing.error})`
+      : "Offline — chạy APP_PORT=18715 python run.py";
+    apiStatus.className = "api-status offline";
+  }
   $("cfg-auto-sync").textContent = settings.auto_sync ? "Bật" : "Tắt";
   $("cfg-poll-active").textContent = `${settings.poll_interval_active_min} phút`;
 
@@ -1471,11 +1702,39 @@ $("tab-reco").addEventListener("click", () => setTab("reco"));
 $("tab-engine").addEventListener("click", () => setTab("engine"));
 $("tab-score").addEventListener("click", () => setTab("score"));
 $("btn-refresh-reco").addEventListener("click", () => loadRecommendations({ forcePoll: true }));
+$("btn-sort-experts-weight").addEventListener("click", async () => {
+  recoExpertSort = "weight";
+  await saveRecoExpertSort(recoExpertSort);
+  updateRecoExpertSortUi();
+  if (lastRecommendationsForCopy) renderLiveExpertsTable(lastRecommendationsForCopy.live_experts || []);
+});
+$("btn-sort-experts-perf").addEventListener("click", async () => {
+  recoExpertSort = "performance";
+  await saveRecoExpertSort(recoExpertSort);
+  updateRecoExpertSortUi();
+  if (lastRecommendationsForCopy) renderLiveExpertsTable(lastRecommendationsForCopy.live_experts || []);
+});
+$("btn-sort-experts-effective").addEventListener("click", async () => {
+  recoExpertSort = "effective";
+  await saveRecoExpertSort(recoExpertSort);
+  updateRecoExpertSortUi();
+  if (lastRecommendationsForCopy) renderLiveExpertsTable(lastRecommendationsForCopy.live_experts || []);
+});
+async function setRecoScoringMode(mode: RecoScoringMode): Promise<void> {
+  recoScoringMode = mode;
+  await saveRecoScoringMode(mode);
+  updateRecoScoringModeUi();
+  await loadRecommendations();
+}
+$("btn-scoring-blend").addEventListener("click", () => void setRecoScoringMode("blend"));
+$("btn-scoring-weight").addEventListener("click", () => void setRecoScoringMode("weight"));
+$("btn-scoring-measured").addEventListener("click", () => void setRecoScoringMode("measured"));
 $("btn-refresh-engine").addEventListener("click", () => loadEngine());
 $("btn-refresh-score").addEventListener("click", () => loadScore(false));
 $("btn-run-score").addEventListener("click", () => loadScore(true));
 
 setupDanCopyHandlers();
+setupRecoPanelCopyHandlers();
 setupDeJumpHandlers();
 setupPickWhoPopup();
 setupRecoPanelCollapses();
@@ -1548,6 +1807,10 @@ toggleSettingsBtn.addEventListener("click", () => {
 
 async function initPopup(): Promise<void> {
   await ensureConfigSeeded();
+  recoExpertSort = await getRecoExpertSort();
+  recoScoringMode = await getRecoScoringMode();
+  updateRecoExpertSortUi();
+  updateRecoScoringModeUi();
   setSettingsOpen(true);
   await refreshUi();
 

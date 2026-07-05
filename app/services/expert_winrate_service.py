@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import os
+from datetime import date, timedelta
 from typing import Any, Optional
 
 from app.repositories.expert_winrate_repo import expert_winrate_repo
 from app.repositories.forum_repo import forum_repo
 from app.repositories.draw_repo import draw_repo
-from app.services.expert_backtest_service import pick_hit
+from app.services.expert_pick_eval import (
+    evaluate_picks_by_date,
+    group_picks_by_date,
+    performance_pick_type_candidates,
+)
 from app.services.expert_scorer import canonical_username
 
-DEFAULT_PERIOD_LABEL = "2026-06"
+DEFAULT_PERIOD_LABEL = os.getenv("EXPERT_PERF_PERIOD", "rolling_90d")
+PERIOD_DISPLAY_LABELS = {
+    "rolling_90d": "90 ngày gần nhất",
+}
 TZ = "Asia/Ho_Chi_Minh"
+LOW_SAMPLE_THRESHOLD = 3
 
 
 def parse_period_label(period_label: str) -> tuple[date, date]:
@@ -30,8 +39,35 @@ def parse_period_label(period_label: str) -> tuple[date, date]:
     raise ValueError(f"Unsupported period_label: {period_label}")
 
 
-def _draw_de(ketqua: dict) -> str:
-    return (ketqua.get("kq0") or "")[-2:].zfill(2)
+def period_display_label(period_label: str | None = None) -> str:
+    label = period_label or DEFAULT_PERIOD_LABEL
+    if label in PERIOD_DISPLAY_LABELS:
+        return PERIOD_DISPLAY_LABELS[label]
+    if len(label) == 7 and label[4] == "-":
+        y, m = int(label[:4]), int(label[5:7])
+        return f"Tháng {m}/{y}"
+    return label
+
+
+def _enrich_performance(perf: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not perf or not perf.get("total"):
+        return None
+    out = {
+        "hits": int(perf["hits"]),
+        "total": int(perf["total"]),
+        "rate_pct": perf["rate_pct"],
+    }
+    if int(perf["total"]) < LOW_SAMPLE_THRESHOLD:
+        out["low_sample"] = True
+    return out
+
+
+def _pick_first_performance(candidates: list[Optional[dict[str, Any]]]) -> Optional[dict[str, Any]]:
+    """Return the first candidate with data — list is ordered most-specific first."""
+    for perf in candidates:
+        if perf and perf.get("total"):
+            return _enrich_performance(perf)
+    return None
 
 
 def compute_period_stats(
@@ -47,61 +83,17 @@ def compute_period_stats(
         period_end.isoformat(),
     )
 
-    stats: dict[str, dict[str, dict]] = {}
-    pick_results: list[dict] = []
-    skipped_no_draw = 0
-    evaluated_dates: set[str] = set()
-
-    by_date: dict[str, list[dict]] = {}
-    for p in rows:
-        d = p.get("target_date") or ""
-        if not d:
-            continue
-        by_date.setdefault(d, []).append(p)
-
-    def _dedupe_day(day_picks: list[dict]) -> list[dict]:
-        merged: dict[tuple[str, str], dict] = {}
-        for p in day_picks:
-            user = canonical_username(p.get("username", ""))
-            pt = p.get("pick_type", "")
-            row = {**p, "username": user}
-            key = (user, pt)
-            prev = merged.get(key)
-            if not prev or (row.get("posted_at") or "") >= (prev.get("posted_at") or ""):
-                merged[key] = row
-        return list(merged.values())
-
-    for target_date, day_picks in sorted(by_date.items()):
-        ketqua = draw_repo.get_mb_ketqua(target_date)
-        if not ketqua:
-            skipped_no_draw += len(day_picks)
-            continue
-        evaluated_dates.add(target_date)
-        de = _draw_de(ketqua)
-
-        for p in _dedupe_day(day_picks):
-            user = p["username"]
-            pt = p["pick_type"]
-            nums = list(p.get("numbers") or [])
-            hit = pick_hit(pt, nums, ketqua)
-
-            bucket = stats.setdefault(user, {}).setdefault(pt, {"hits": 0, "total": 0})
-            bucket["total"] += 1
-            if hit:
-                bucket["hits"] += 1
-
-            if write_pick_results:
-                pick_results.append({
-                    "target_date": target_date,
-                    "username": user,
-                    "pick_type": pt,
-                    "numbers": nums,
-                    "hit": hit,
-                    "draw_de": de,
-                })
+    eval_result = evaluate_picks_by_date(
+        group_picks_by_date(rows),
+        draw_repo.get_mb_ketqua,
+        collect_results=write_pick_results,
+    )
+    stats = eval_result["stats"]
+    pick_results = eval_result["pick_results"]
 
     upserted = 0
     if not dry_run:
+        expert_winrate_repo.delete_period(period_label)
         for user, types in stats.items():
             for pt, b in types.items():
                 if b["total"] <= 0:
@@ -127,8 +119,8 @@ def compute_period_stats(
         "period_end": period_end.isoformat(),
         "rows_upserted": upserted,
         "pick_results_written": len(pick_results) if write_pick_results and not dry_run else 0,
-        "skipped_no_draw": skipped_no_draw,
-        "dates_evaluated": len(evaluated_dates),
+        "skipped_no_draw": eval_result["skipped_no_draw"],
+        "dates_evaluated": eval_result["dates_evaluated"],
         "users": stats,
         "dry_run": dry_run,
     }
@@ -140,12 +132,11 @@ def get_performance(
     period_label: str = DEFAULT_PERIOD_LABEL,
 ) -> Optional[dict[str, Any]]:
     user = canonical_username(username)
-    perf = expert_winrate_repo.get_performance(user, pick_type, period_label)
-    if perf:
-        return perf
-    if pick_type != "default":
-        perf = expert_winrate_repo.get_performance(user, "default", period_label)
-    return perf
+    perfs = [
+        expert_winrate_repo.get_performance(user, pt, period_label)
+        for pt in performance_pick_type_candidates(pick_type)
+    ]
+    return _pick_first_performance(perfs)
 
 
 def refresh_period(

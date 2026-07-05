@@ -96,6 +96,15 @@ class ExpertWinrateRepository:
             for r in rows
         ]
 
+    def delete_period(self, period_label: str) -> int:
+        with get_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM expert_win_rates WHERE period_label = %s",
+                (period_label,),
+            )
+            conn.commit()
+            return cur.rowcount
+
     def get_performance(
         self, username: str, pick_type: str, period_label: str
     ) -> Optional[dict[str, Any]]:
