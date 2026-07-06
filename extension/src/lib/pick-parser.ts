@@ -1,11 +1,21 @@
 import type { PostPicks } from "../types/forum.js";
 
+/** Decode HTML entities from stripHtml (e.g. &gt; → >). */
+export function normalizeForumText(text: string): string {
+  return text
+    .replace(/&gt;/gi, ">")
+    .replace(/&lt;/gi, "<")
+    .replace(/&amp;/gi, "&")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\u00a0/g, " ");
+}
+
 /** Remove XenForo quote/reply blocks — avoids parsing quoted picks from other users. */
 export function stripQuoteBlocks(text: string): string {
   let out = text;
   // "User nói: ↑ ... Click to expand"
   out = out.replace(
-    /[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?Click to expand/gi,
+    /[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?(?:Click to expand|$)/gi,
     " ",
   );
   // HTML quote blocks if any raw tags remain
@@ -13,19 +23,59 @@ export function stripQuoteBlocks(text: string): string {
   return out.replace(/\s+/g, " ").trim();
 }
 
+function dayMarkers(text: string): Array<{ day: number; month: number; year?: number; start: number }> {
+  const out: Array<{ day: number; month: number; year?: number; start: number }> = [];
+  const seen = new Set<number>();
+
+  const add = (day: number, month: number, year: number | undefined, start: number) => {
+    if (day < 1 || day > 31 || month < 1 || month > 12) return;
+    if (seen.has(start)) return;
+    seen.add(start);
+    out.push({ day, month, year, start });
+  };
+
+  let m: RegExpExecArray | null;
+  const predRe = /dự\s*đoán\s+(?:xsmb\s+)?(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})\b/gi;
+  while ((m = predRe.exec(text)) !== null) {
+    let year = Number(m[3]);
+    if (year < 100) year += 2000;
+    add(Number(m[1]), Number(m[2]), year, m.index + m[0].search(/\d/));
+  }
+
+  const pat = /(?:^|\s)(?:ngày\s+)?(\d{1,2})\s*[./-]\s*(\d{1,2})(?:\s*[./-]\s*(\d{2,4}))?\b/gi;
+  while ((m = pat.exec(text)) !== null) {
+    let year: number | undefined;
+    if (m[3]) {
+      year = Number(m[3]);
+      if (year < 100) year += 2000;
+    }
+    add(Number(m[1]), Number(m[2]), year, m.index + m[0].search(/\d/));
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+export function daySectionForTargetDate(text: string, targetDate: string): string | null {
+  const [y, mo, d] = targetDate.split("-").map(Number);
+  const markers = dayMarkers(text);
+  if (!markers.length) return null;
+  for (let i = 0; i < markers.length; i++) {
+    const mk = markers[i];
+    if (mk.day !== d || mk.month !== mo) continue;
+    if (mk.year !== undefined && mk.year !== y) continue;
+    const end = i + 1 < markers.length ? markers[i + 1].start : text.length;
+    return text.slice(mk.start, end).trim();
+  }
+  return null;
+}
+
 function latestDaySection(text: string): string {
   // Support:
   // - "Ngày 02.07.2026" / "Ngày 05/7" / "Ngày 05/7/2026"
-  // - "2/7" or "02/07/2026" at line start (common shorthand in TL posts)
-  const reFull = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}/gi;
-  const reNgayShort = /ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?/gi;
-  const reLine = /(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b/gi;
-  const matches = [...text.matchAll(reFull), ...text.matchAll(reNgayShort), ...text.matchAll(reLine)].sort(
-    (a, b) => (a.index ?? 0) - (b.index ?? 0),
-  );
-  if (!matches.length) return text;
-  const last = matches[matches.length - 1];
-  return text.slice(last.index ?? 0).trim();
+  // - "2/7" or "02/07/2026" inline (one-line cumulative thảo luận posts)
+  const markers = dayMarkers(text);
+  if (!markers.length) return text;
+  return text.slice(markers[markers.length - 1].start).trim();
 }
 
 export function extractStl(text: string): string[] {
@@ -71,6 +121,118 @@ export function extractBtl(text: string): string[] {
     while ((m = re.exec(chunk)) !== null) nums.add(m[1]);
   }
   return [...nums].sort();
+}
+
+function btlNumFromLanSection(section: string): string | null {
+  const m = section.match(/(?:CHĂN\s+)?BTL\s*(\d{2})\b|chăn\s*(\d{2})\b/i);
+  if (!m) return null;
+  return m[1] || m[2];
+}
+
+export function splitLanSections(text: string): Array<{ lanNo: number; section: string }> {
+  const parts = normalizeForumText(text).split(/(?=(?:Lần|LẦN)\s*\d+\s*(?::|BTL|CHĂN)|L\d+\s*:)/i);
+  const out: Array<{ lanNo: number; section: string }> = [];
+  for (const part of parts) {
+    const p = part.trim();
+    if (!p) continue;
+    let m = p.match(/^(?:Lần|LẦN)\s*(\d+)\s*:\s*([\s\S]*)$/i);
+    if (m) {
+      out.push({ lanNo: Number(m[1]), section: m[2].trim() });
+      continue;
+    }
+    m = p.match(/^(?:Lần|LẦN)\s*(\d+)\s+([\s\S]*)$/i);
+    if (m) {
+      out.push({ lanNo: Number(m[1]), section: m[2].trim() });
+      continue;
+    }
+    m = p.match(/^L(\d+)\s*:\s*([\s\S]*)$/i);
+    if (m) out.push({ lanNo: Number(m[1]), section: m[2].trim() });
+  }
+  return out;
+}
+
+function parseLanDayRange(
+  fragment: string,
+  defaultYear: number,
+  defaultMonth: number,
+): { year: number; month: number; d0: number; d1: number } | null {
+  const frag = normalizeForumText(fragment);
+
+  const valid = (yr: number, mo: number, d0: number, d1: number) => {
+    if (d0 < 1 || d1 < 1 || d0 > 31 || d1 > 31) return null;
+    return { year: yr, month: mo, d0, d1 };
+  };
+
+  let m = frag.match(
+    /(?:từ|tu)\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*(?:->|[-→>]+)\s*(\d{1,2})\s*\/\s*(\d{1,2})\b/i,
+  );
+  if (m) {
+    const d0 = Number(m[1]);
+    const mo = Number(m[2]);
+    const d1 = Number(m[3]);
+    const mo2 = Number(m[4]);
+    if (mo === mo2) {
+      const got = valid(defaultYear, mo, d0, d1);
+      if (got) return got;
+    }
+  }
+
+  m = frag.match(/(?:từ|tu)\s*(\d{1,2})\s*[>→\-]+\s*(\d{1,2})\b/i);
+  if (m) {
+    const got = valid(defaultYear, defaultMonth, Number(m[1]), Number(m[2]));
+    if (got) return got;
+  }
+
+  m = frag.match(/(?:từ|tu)\s*(\d{1,2})\s*-\s*(\d{1,2})\b/i);
+  if (m) {
+    const got = valid(defaultYear, defaultMonth, Number(m[1]), Number(m[2]));
+    if (got) return got;
+  }
+
+  const patterns: Array<{ re: RegExp; hasMonth: boolean }> = [
+    { re: /(?:từ|tu)\s*(\d{1,2})\s*[>→\-]\s*(\d{1,2})\s*\/\s*(\d{1,2})/i, hasMonth: true },
+    { re: /\(\s*(?:từ|tu)?\s*(\d{1,2})\s*[>→\-]\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\)/i, hasMonth: true },
+    { re: /(?:từ|tu)\s*(\d{1,2})\s*-\s*(\d{1,2})\s*\/\s*(\d{1,2})/i, hasMonth: true },
+    { re: /\(\s*(\d{1,2})\s*-\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\)/i, hasMonth: true },
+    { re: /(\d{1,2})\s*-\s*(\d{1,2})\s*\/\s*(\d{1,2})/i, hasMonth: true },
+    { re: /\(\s*(\d{1,2})\s*-\s*(\d{1,2})\s*\)/i, hasMonth: false },
+  ];
+  for (const { re, hasMonth } of patterns) {
+    const hit = frag.match(re);
+    if (!hit) continue;
+    const d0 = Number(hit[1]);
+    const d1 = Number(hit[2]);
+    const mo = hasMonth ? Number(hit[3]) : defaultMonth;
+    const got = valid(defaultYear, mo, d0, d1);
+    if (got) return got;
+  }
+  return null;
+}
+
+/** Chăn nuôi BTL K3N — one BTL per Lần khung. null = not Lần format. */
+export function extractBtlForTargetDate(
+  text: string,
+  targetDate: string,
+): string[] | null {
+  const sections = splitLanSections(text);
+  if (!sections.length) return null;
+  if (!sections.some((s) => btlNumFromLanSection(s.section))) return null;
+
+  const [y, m, d] = targetDate.split("-").map(Number);
+  const cur = Date.UTC(y, m - 1, d);
+  let best: { lanNo: number; num: string } | null = null;
+
+  for (const { lanNo, section } of sections) {
+    const num = btlNumFromLanSection(section);
+    if (!num) continue;
+    const dr = parseLanDayRange(section, y, m);
+    if (!dr || dr.month !== m || dr.year !== y) continue;
+    const start = Date.UTC(dr.year, dr.month - 1, dr.d0);
+    const end = Date.UTC(dr.year, dr.month - 1, dr.d1);
+    if (cur < start || cur > end) continue;
+    if (!best || lanNo >= best.lanNo) best = { lanNo, num };
+  }
+  return best ? [best.num] : [];
 }
 
 export function extractStdDe(text: string): string[] {
@@ -224,8 +386,27 @@ export function extractDe1So(text: string): string[] {
   return [...nums].sort();
 }
 
+function danExtractChunk(text: string): string {
+  m = text.match(/(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)?\s*:\s*/i);
+  if (m && m.index !== undefined) return text.slice(m.index + m[0].length);
+  m = text.match(/(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)\s+/i);
+  if (m && m.index !== undefined) return text.slice(m.index + m[0].length);
+  m = text.match(/(?:dàn|dan)\s*(?:đề|de)[^\n]*/i);
+  if (m && m.index !== undefined) return text.slice(m.index + m[0].length);
+  return text
+    .split("\n")
+    .filter((line) => {
+      const s = line.trim();
+      if (/^\d{1,2}\s*[./-]\s*\d/.test(s)) return false;
+      if (/\b(?:BTL|STL)\b/i.test(s)) return false;
+      return true;
+    })
+    .join("\n");
+}
+
 export function extractDanDe(text: string): string[] {
-  const nums = [...text.matchAll(/\b(\d{2})\b/g)].map((m) => m[1]);
+  const chunk = danExtractChunk(text);
+  const nums = [...chunk.matchAll(/\b(\d{2})\b/g)].map((m) => m[1]);
   const valid = nums.filter((n) => Number(n) >= 0 && Number(n) <= 99);
   if (valid.length < 30) return [];
   return [...new Set(valid)];
@@ -252,14 +433,26 @@ export function extractMucLo(text: string): Record<number, string[]> {
   return result;
 }
 
-export function parsePicksFromContent(raw: string, threadTitle = ""): PostPicks {
-  const stripped = stripQuoteBlocks(raw);
-  if (stripped.length < 15) return {};
-  const scoped = latestDaySection(stripped);
+export function parsePicksFromContent(
+  raw: string,
+  threadTitle = "",
+  targetDate = "",
+): PostPicks {
+  const stripped = stripQuoteBlocks(normalizeForumText(raw));
+  if (stripped.length < 8 && !/\b(?:BTL|STL|Btl|Stl)\b/i.test(stripped)) return {};
+  const scoped = targetDate
+    ? (daySectionForTargetDate(stripped, targetDate) || latestDaySection(stripped))
+    : latestDaySection(stripped);
   const picks: PostPicks = {};
   const stl = extractStl(scoped);
   if (stl.length) picks.stl = stl;
-  const btl = extractBtl(scoped);
+  let btl: string[] | null = null;
+  if (targetDate) {
+    btl = extractBtlForTargetDate(stripped, targetDate);
+  }
+  if (!btl?.length) {
+    btl = extractBtl(scoped);
+  }
   if (btl.length) picks.btl = btl;
   const stdDe = extractStdDe(scoped);
   if (stdDe.length) picks.std_de = stdDe;

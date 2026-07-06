@@ -347,6 +347,12 @@ def _de_top4(
     de_scores: dict[str, float] = {}
     dan_pool: set[str] = set()
     dan_users: set[tuple[str, str]] = set()  # (user, norm_num) from dan_board — prevent double counting
+    user_counts: dict[str, set[str]] = {}  # number -> set of users who picked it
+
+    def _track_user(num: str, user: str) -> None:
+        if num not in user_counts:
+            user_counts[num] = set()
+        user_counts[num].add(user)
 
     for row in dan_board or []:
         if ctx.mode == "weight":
@@ -359,6 +365,7 @@ def _de_top4(
             n = _norm_de(num)
             dan_users.add((row["user"], n))
             dan_pool.add(n)
+            _track_user(n, row["user"])
             de_scores[n] = de_scores.get(n, 0.0) + float(w)
 
     for p in picks:
@@ -369,6 +376,7 @@ def _de_top4(
             for num in p.get("numbers") or []:
                 n = _norm_de(num)
                 dan_pool.add(n)
+                _track_user(n, user)
                 # Double‑counting check: user already had this number in dan_board
                 if (user, n) in dan_users:
                     de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
@@ -381,6 +389,7 @@ def _de_top4(
                 n = _norm_de(num)
                 dan_users.add((user, n))
                 dan_pool.add(n)
+                _track_user(n, user)
                 de_scores[n] = de_scores.get(n, 0.0) + w
             continue
         # Skip de_cham — handled separately below
@@ -398,6 +407,7 @@ def _de_top4(
                     for part in parts:
                         n = _norm_de(part.strip())
                         dan_pool.add(n)
+                        _track_user(n, user)
                         if (user, n) in dan_users:
                             de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
                         else:
@@ -406,6 +416,7 @@ def _de_top4(
                 for num in p.get("numbers") or []:
                     n = _norm_de(num)
                     dan_pool.add(n)
+                    _track_user(n, user)
                     if (user, n) in dan_users:
                         de_scores[n] = de_scores.get(n, 0.0) + w * 0.5
                     else:
@@ -434,6 +445,13 @@ def _de_top4(
         if tail in cham_weight:
             bonus = cham_weight[tail] * 0.5
             de_scores[n] = de_scores.get(n, 0.05) + bonus
+
+    # Consensus bonus: +0.3 cho mỗi cao thủ từ người thứ 3 trở đi
+    CONSENSUS_BONUS = 0.3
+    for n in de_scores:
+        users = len(user_counts.get(n, set()))
+        if users >= 3:
+            de_scores[n] += CONSENSUS_BONUS * (users - 2)
 
     if de_scores:
         return sorted(de_scores.keys(), key=lambda n: (-de_scores[n], n))[:4]

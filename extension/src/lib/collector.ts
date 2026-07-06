@@ -116,11 +116,12 @@ async function fetchAndMergePage(
   startMs: number,
   endMs: number,
   firstHtml: string,
+  targetDate: string,
 ): Promise<{ added: number; minTs: number; rowCount: number }> {
   const url = pageUrlFor(page);
   const html = page === 1 || url === thread.url ? firstHtml : await fetchForumHtml(url);
   const rows = extractPostsFromHtml(html);
-  const posts = toForumPosts(rows, thread.forum, thread.slug, startMs, endMs, thread.title);
+  const posts = toForumPosts(rows, thread.forum, thread.slug, startMs, endMs, thread.title, targetDate);
   const added = mergePosts(session, posts);
   const minTs = rows.length
     ? Math.min(...rows.map((r) => r.posted_at_ms || Number.MAX_SAFE_INTEGER))
@@ -134,6 +135,7 @@ async function crawlThreadPage(
   startMs: number,
   endMs: number,
   force: boolean,
+  targetDate: string,
 ): Promise<number> {
   const key = threadStorageKey(thread.forum, thread.slug);
   let state = session.threads[key];
@@ -183,7 +185,7 @@ async function crawlThreadPage(
   if (prevLastPage > 0 && lastPage > prevLastPage) {
     for (let page = prevLastPage + 1; page < lastPage && pagesFetched < MAX_PAGES_PER_CYCLE; page += 1) {
       const { added } = await fetchAndMergePage(
-        thread, session, page, pageUrlFor, startMs, endMs, firstHtml,
+        thread, session, page, pageUrlFor, startMs, endMs, firstHtml, targetDate,
       );
       totalAdded += added;
       bumpPageCount();
@@ -194,7 +196,7 @@ async function crawlThreadPage(
   const lastUrl = pageUrlFor(lastPage);
   const lastHtml = lastPage === 1 || lastUrl === thread.url ? firstHtml : await fetchForumHtml(lastUrl);
   const lastRows = extractPostsFromHtml(lastHtml);
-  const lastPosts = toForumPosts(lastRows, thread.forum, thread.slug, startMs, endMs, thread.title);
+  const lastPosts = toForumPosts(lastRows, thread.forum, thread.slug, startMs, endMs, thread.title, targetDate);
   totalAdded += mergePosts(session, lastPosts);
   bumpPageCount();
 
@@ -225,7 +227,7 @@ async function crawlThreadPage(
     ) {
       if (pagesFetched >= MAX_PAGES_PER_CYCLE) break;
       const { added, minTs, rowCount } = await fetchAndMergePage(
-        thread, session, page, pageUrlFor, startMs, endMs, firstHtml,
+        thread, session, page, pageUrlFor, startMs, endMs, firstHtml, targetDate,
       );
       totalAdded += added;
       bumpPageCount();
@@ -351,7 +353,7 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   let totalAdded = 0;
   for (const thread of threads) {
     try {
-      totalAdded += await crawlThreadPage(thread, session, startMs, endMs, force);
+      totalAdded += await crawlThreadPage(thread, session, startMs, endMs, force, targetDate);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === "LOGIN_FAILED" || msg === "NOT_LOGGED_IN") {

@@ -7,6 +7,7 @@ import logging
 
 from app.repositories.forum_repo import forum_repo
 from app.services.expert_scorer import canonical_username
+from app.services.forum_crawl_service import parse_picks
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,15 @@ def _dan_size_label(pick_type: str) -> str:
     return {"dan_40s": "40s", "dan_36s": "36s", "dan_64s": "64s"}.get(pick_type, "dàn")
 
 
-def _extract_pick_rows(posts: dict[str, Any]) -> dict[tuple[str, str], dict]:
+def _effective_picks(post: dict[str, Any], target_date: str) -> dict:
+    """Re-parse raw_content server-side so ingest stays correct after parser fixes."""
+    raw = post.get("raw_content") or ""
+    if raw:
+        return parse_picks(raw, post.get("thread_id") or "", target_date)
+    return post.get("picks") or {}
+
+
+def _extract_pick_rows(posts: dict[str, Any], target_date: str = "") -> dict[tuple[str, str], dict]:
     """Keep latest post per (username, pick_type)."""
     latest: dict[tuple[str, str], dict] = {}
 
@@ -56,7 +65,7 @@ def _extract_pick_rows(posts: dict[str, Any]) -> dict[tuple[str, str], dict]:
         user = canonical_username(post.get("user", "").strip())
         if not user:
             continue
-        picks = post.get("picks") or {}
+        picks = _effective_picks(post, target_date)
         forum = post.get("forum")
         post_id = post.get("post_id")
         posted_at = _parse_ts(post.get("posted_at_ms") or post.get("posted_at"))
@@ -139,13 +148,21 @@ def _build_coverage(body: dict) -> dict:
     }
 
 
+def _refresh_posts_picks(posts: dict[str, Any], target_date: str) -> None:
+    for post in posts.values():
+        picks = _effective_picks(post, target_date)
+        if picks:
+            post["picks"] = picks
+
+
 def ingest_collect_session(body: dict) -> dict:
     target_date = body.get("target_date") or body.get("summary", {}).get("target_date")
     if not target_date:
         raise ValueError("target_date required")
 
     posts = body.get("posts") or {}
-    pick_map = _extract_pick_rows(posts)
+    _refresh_posts_picks(posts, target_date)
+    pick_map = _extract_pick_rows(posts, target_date)
     picks = list(pick_map.values())
 
     forum_repo.upsert_session(

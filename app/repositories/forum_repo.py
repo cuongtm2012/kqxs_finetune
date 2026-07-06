@@ -148,8 +148,7 @@ class ForumRepository:
 
     def summary_dict_from_picks(self, target_date: str) -> dict[str, Any]:
         session = self.get_session(target_date)
-        if session and session.get("payload", {}).get("summary"):
-            return session["payload"]["summary"]
+        cached = (session or {}).get("payload", {}).get("summary") or {}
 
         picks = self.get_user_picks(target_date)
         stl_k2n_users: dict = {}
@@ -158,6 +157,8 @@ class ForumRepository:
         de_cham_leaders: list = []
         dan_de: list = []
         muc_lo: dict = {}
+        stl_pairs: list[tuple[str, str]] = []
+        btl_pairs: list[tuple[str, str]] = []
 
         for p in picks:
             user = p["username"]
@@ -171,12 +172,16 @@ class ForumRepository:
                     bucket[user] = {"stl": [], "btl": [], "raw": excerpt}
                 bucket[user]["stl"] = nums
                 bucket[user]["raw"] = excerpt
+                for n in nums:
+                    stl_pairs.append((n, user))
             elif pt == "btl":
                 bucket = btl_k3n_users if p.get("forum") == "chan_nuoi" else daily_users
                 if user not in bucket:
                     bucket[user] = {"btl": [], "raw": excerpt}
                 bucket[user]["btl"] = nums
                 bucket[user]["raw"] = excerpt
+                for n in nums:
+                    btl_pairs.append((n, user))
             elif pt == "de_cham":
                 de_cham_leaders.append({"user": user, "cham": nums})
                 if user not in daily_users:
@@ -193,7 +198,17 @@ class ForumRepository:
             elif pt == "muc_lo" and nums:
                 muc_lo[0] = nums
 
-        return {
+        def _freq_map(entries: list[tuple[str, str]]) -> dict:
+            out: dict = {}
+            for num, user in entries:
+                if num not in out:
+                    out[num] = {"count": 0, "users": []}
+                out[num]["count"] += 1
+                if user not in out[num]["users"]:
+                    out[num]["users"].append(user)
+            return dict(sorted(out.items(), key=lambda x: -x[1]["count"]))
+
+        built = {
             "date": target_date,
             "target_date": target_date,
             "stl_k2n_users": stl_k2n_users,
@@ -202,9 +217,13 @@ class ForumRepository:
             "de_cham_leaders": de_cham_leaders,
             "dan_de": dan_de,
             "muc_lo": muc_lo,
-            "stl_frequency": {},
-            "btl_frequency": {},
+            "stl_frequency": _freq_map(stl_pairs),
+            "btl_frequency": _freq_map(btl_pairs),
         }
+        for key in ("forums", "weekday", "collected_at", "dan_board", "all_posts"):
+            if cached.get(key):
+                built[key] = cached[key]
+        return built
 
 
 forum_repo = ForumRepository()

@@ -3,7 +3,7 @@ from unittest.mock import patch
 from app.services.forum_recommendation_service import (
     ScoringContext,
     _aggregate_loto_consensus,
-    _de_top4_consensus,
+    _de_top4_anti_consensus,
     _pick_xien_2,
     resolve_scoring_context,
 )
@@ -27,7 +27,7 @@ def test_consensus_loto_counts_users_not_weights():
     assert top["38"] == 1.0
 
 
-def test_consensus_de_counts_users_in_dan():
+def test_anti_consensus_de_returns_four_numbers():
     picks = [
         _pick("u1", "dan_de", ["01", "05", "11"]),
         _pick("u2", "dan_de", ["01", "05", "30"]),
@@ -38,9 +38,10 @@ def test_consensus_de_counts_users_in_dan():
         {"user": "u2", "numbers": ["01", "05", "30"]},
         {"user": "u3", "numbers": ["05", "11", "30"]},
     ]
-    top4 = _de_top4_consensus(picks, {}, dan_board)
-    assert top4[0] == "05"
-    assert set(top4) == {"05", "01", "11", "30"}
+    ctx = resolve_scoring_context("weight")
+    top4 = _de_top4_anti_consensus(picks, {}, dan_board, ctx)
+    assert len(top4) == 4
+    assert all(len(n) == 2 for n in top4)
 
 
 def test_pick_xien_from_consensus_rank():

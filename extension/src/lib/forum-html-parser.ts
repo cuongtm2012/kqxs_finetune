@@ -73,6 +73,7 @@ export function toForumPosts(
   windowStartMs: number,
   windowEndMs: number,
   threadTitle = "",
+  targetDate = "",
 ): ForumPost[] {
   return rows
     .filter((r) => r.posted_at_ms >= windowStartMs && r.posted_at_ms < windowEndMs)
@@ -84,7 +85,7 @@ export function toForumPosts(
       posted_at: new Date(r.posted_at_ms).toISOString(),
       posted_at_ms: r.posted_at_ms,
       raw_content: r.raw_content,
-      picks: parsePicksFromContent(r.raw_content, threadTitle),
+      picks: parsePicksFromContent(r.raw_content, threadTitle, targetDate),
     }));
 }
 

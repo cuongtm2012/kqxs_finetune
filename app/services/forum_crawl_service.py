@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from dataclasses import dataclass
@@ -85,10 +86,15 @@ def strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_forum_text(text: str) -> str:
+    """Decode HTML entities from extension stripHtml (e.g. &gt; → >)."""
+    return html.unescape(text).replace("\xa0", " ")
+
+
 def strip_quote_blocks(text: str) -> str:
     """Remove XenForo quote/reply blocks before pick extraction."""
     out = re.sub(
-        r"[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?Click to expand",
+        r"[\w.\-_]+ nói:\s*(?:↑|&uarr;)?[\s\S]*?(?:Click to expand|$)",
         " ",
         text,
         flags=re.I,
@@ -102,22 +108,69 @@ def strip_quote_blocks(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _day_markers(text: str) -> list[tuple[int, int, Optional[int], int]]:
+    """Find d/m[/yyyy] day headers — including inline one-line thảo luận posts."""
+    out: list[tuple[int, int, Optional[int], int]] = []
+    seen: set[int] = set()
+
+    def _add(day: int, month: int, yr: Optional[int], start: int) -> None:
+        if not (1 <= day <= 31 and 1 <= month <= 12):
+            return
+        if start in seen:
+            return
+        seen.add(start)
+        out.append((day, month, yr, start))
+
+    for m in re.finditer(
+        r"dự\s*đoán\s+(?:xsmb\s+)?(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})\b",
+        text,
+        re.I,
+    ):
+        yr = int(m.group(3))
+        if yr < 100:
+            yr += 2000
+        _add(int(m.group(1)), int(m.group(2)), yr, m.start(1))
+
+    pat = re.compile(
+        r"(?:^|\s)(?:ngày\s+)?(\d{1,2})\s*[./-]\s*(\d{1,2})(?:\s*[./-]\s*(\d{2,4}))?\b",
+        re.I,
+    )
+    for m in pat.finditer(text):
+        yr: Optional[int] = None
+        if m.group(3):
+            yr = int(m.group(3))
+            if yr < 100:
+                yr += 2000
+        _add(int(m.group(1)), int(m.group(2)), yr, m.start(1))
+
+    out.sort(key=lambda x: x[3])
+    return out
+
+
+def day_section_for_target_date(text: str, target_date: str) -> Optional[str]:
+    """Slice multi-day thảo luận post to the block for target_date (e.g. 6/7 → 06-07)."""
+    y, m, d = map(int, target_date.split("-"))
+    markers = _day_markers(text)
+    if not markers:
+        return None
+    for i, (day, month, yr, start) in enumerate(markers):
+        if day != d or month != m:
+            continue
+        if yr is not None and yr != y:
+            continue
+        end = markers[i + 1][3] if i + 1 < len(markers) else len(text)
+        return text[start:end].strip()
+    return None
+
+
 def latest_day_section(text: str) -> str:
     # Support:
     # - "Ngày 02.07.2026" / "Ngày 05/7" / "Ngày 05/7/2026"
-    # - "2/7" or "02/07/2026" at line start (common shorthand)
-    matches = []
-    matches.extend(list(re.finditer(r"ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}", text, re.I)))
-    matches.extend(list(re.finditer(
-        r"ngày\s+\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?", text, re.I,
-    )))
-    matches.extend(list(re.finditer(
-        r"(?:^|\n)\s*\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?\b", text, re.I,
-    )))
-    if not matches:
+    # - "2/7" or "02/07/2026" inline (one-line cumulative thảo luận posts)
+    markers = _day_markers(text)
+    if not markers:
         return text
-    matches.sort(key=lambda m: m.start())
-    return text[matches[-1].start():].strip()
+    return text[markers[-1][3]:].strip()
 
 
 def extract_posts_from_html(html: str) -> list[RawPost]:
@@ -172,6 +225,7 @@ def extract_stl(text: str) -> list[str]:
 
 
 def extract_btl(text: str) -> list[str]:
+    """Single-line / daily BTL — not multi-Lần chăn nuôi (use extract_btl_for_target_date)."""
     lines = text.split("\n")
     last_btl_line = ""
     for line in lines:
@@ -186,6 +240,148 @@ def extract_btl(text: str) -> list[str]:
     if not nums:
         nums = {m.group(1) for m in re.finditer(r"BTL[:\s]*(\d{2})", chunk, re.I)}
     return sorted(nums)
+
+
+def _btl_num_from_lan_section(section: str) -> Optional[str]:
+    m = re.search(
+        r"(?:CHĂN\s+)?BTL\s*(\d{2})\b|chăn\s*(\d{2})\b",
+        section,
+        re.I,
+    )
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
+
+
+_LAN_SPLIT_RE = re.compile(
+    r"(?=(?:Lần|LẦN)\s*\d+\s*(?::|BTL|CHĂN)|L\d+\s*:)",
+    re.I,
+)
+
+
+def split_lan_sections(text: str) -> list[tuple[int, str]]:
+    """Split chăn nuôi cumulative post into Lần 1 / L01 blocks."""
+    text = normalize_forum_text(text)
+    parts = _LAN_SPLIT_RE.split(text)
+    out: list[tuple[int, str]] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"(?:Lần|LẦN)\s*(\d+)\s*:\s*(.*)", part, re.I | re.S)
+        if m:
+            out.append((int(m.group(1)), m.group(2).strip()))
+            continue
+        m = re.match(r"(?:Lần|LẦN)\s*(\d+)\s+(.*)", part, re.I | re.S)
+        if m:
+            out.append((int(m.group(1)), m.group(2).strip()))
+            continue
+        m = re.match(r"L(\d+)\s*:\s*(.*)", part, re.I | re.S)
+        if m:
+            out.append((int(m.group(1)), m.group(2).strip()))
+    return out
+
+
+def parse_lan_day_range(
+    fragment: str,
+    default_year: int,
+    default_month: int,
+) -> Optional[tuple[int, int, int, int]]:
+    """Parse khung ngày in a Lần block → (year, month, day_start, day_end)."""
+    fragment = normalize_forum_text(fragment)
+
+    def _valid(yr: int, mo: int, d0: int, d1: int) -> Optional[tuple[int, int, int, int]]:
+        try:
+            date(yr, mo, d0)
+            date(yr, mo, d1)
+            return yr, mo, d0, d1
+        except ValueError:
+            return None
+
+    # 01/07 -> 03/07 or 01/07-05/07 (full dd/mm both sides)
+    m = re.search(
+        r"(?:từ|tu)\s*(\d{1,2})\s*/\s*(\d{1,2})\s*(?:->|[-→>]+)\s*(\d{1,2})\s*/\s*(\d{1,2})\b",
+        fragment,
+        re.I,
+    )
+    if m:
+        d0, mo, d1, mo2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        if mo == mo2:
+            got = _valid(default_year, mo, d0, d1)
+            if got:
+                return got
+
+    # từ 01-> 03 / từ 04-> 06 (day only, no month suffix)
+    m = re.search(r"(?:từ|tu)\s*(\d{1,2})\s*[>→\-]+\s*(\d{1,2})\b", fragment, re.I)
+    if m:
+        got = _valid(default_year, default_month, int(m.group(1)), int(m.group(2)))
+        if got:
+            return got
+
+    # (TỪ 01-05) K5N style — day range without month
+    m = re.search(r"(?:từ|tu)\s*(\d{1,2})\s*-\s*(\d{1,2})\b", fragment, re.I)
+    if m:
+        got = _valid(default_year, default_month, int(m.group(1)), int(m.group(2)))
+        if got:
+            return got
+
+    patterns = [
+        r"(?:từ|tu)\s*(\d{1,2})\s*[>→\-]\s*(\d{1,2})\s*/\s*(\d{1,2})",
+        r"\(\s*(?:từ|tu)?\s*(\d{1,2})\s*[>→\-]\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)",
+        r"(?:từ|tu)\s*(\d{1,2})\s*-\s*(\d{1,2})\s*/\s*(\d{1,2})",
+        r"\(\s*(\d{1,2})\s*-\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)",
+        r"(\d{1,2})\s*-\s*(\d{1,2})\s*/\s*(\d{1,2})",
+        r"\(\s*(\d{1,2})\s*-\s*(\d{1,2})\s*\)",
+    ]
+    for i, pat in enumerate(patterns):
+        m = re.search(pat, fragment, re.I)
+        if not m:
+            continue
+        d0, d1 = int(m.group(1)), int(m.group(2))
+        if i == len(patterns) - 1:
+            mo, yr = default_month, default_year
+        else:
+            mo = int(m.group(3))
+            yr = default_year
+        got = _valid(yr, mo, d0, d1)
+        if got:
+            return got
+    return None
+
+
+def extract_btl_for_target_date(text: str, target_date: str) -> Optional[list[str]]:
+    """
+    Chăn nuôi BTL K3N: mỗi Lần = 1 số + khung ngày.
+    Returns None if not a Lần-style post (caller uses extract_btl).
+  """
+    sections = split_lan_sections(text)
+    if not sections:
+        return None
+    if not any(_btl_num_from_lan_section(s) for _, s in sections):
+        return None
+
+    y, m, d = map(int, target_date.split("-"))
+    cur = date(y, m, d)
+    best: Optional[tuple[int, str]] = None
+
+    for lan_no, section in sections:
+        num = _btl_num_from_lan_section(section)
+        if not num:
+            continue
+        dr = parse_lan_day_range(section, y, m)
+        if not dr:
+            continue
+        yr, mo, d0, d1 = dr
+        if mo != m or yr != y:
+            continue
+        try:
+            if date(yr, mo, d0) <= cur <= date(yr, mo, d1):
+                if best is None or lan_no >= best[0]:
+                    best = (lan_no, num)
+        except ValueError:
+            continue
+
+    return [best[1]] if best else []
 
 
 def extract_std_de(text: str) -> list[str]:
@@ -314,8 +510,31 @@ def infer_dan_pick_type(count: int, thread_title: str = "", text: str = "") -> s
     return "dan_de"
 
 
+def _dan_extract_chunk(text: str) -> str:
+    """Prefer numbers listed after a Dàn đề header — avoids BTL/STL/date pollution."""
+    m = re.search(r"(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)?\s*:\s*", text, re.I)
+    if m:
+        return text[m.end():]
+    m = re.search(r"(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)\s+", text, re.I)
+    if m:
+        return text[m.end():]
+    m = re.search(r"(?:dàn|dan)\s*(?:đề|de)[^\n]*", text, re.I)
+    if m:
+        return text[m.end():]
+    lines = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if re.match(r"\d{1,2}\s*[./-]\s*\d", s):
+            continue
+        if re.search(r"\b(?:BTL|STL)\b", s, re.I):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def extract_dan_de(text: str) -> list[str]:
-    nums = re.findall(r"\b(\d{2})\b", text)
+    chunk = _dan_extract_chunk(text)
+    nums = re.findall(r"\b(\d{2})\b", chunk)
     valid = [n for n in nums if 0 <= int(n) <= 99]
     if len(valid) < 30:
         return []
@@ -339,16 +558,23 @@ def extract_muc_lo(text: str) -> dict[int, list[str]]:
     return result
 
 
-def parse_picks(raw: str, thread_title: str = "") -> dict:
-    stripped = strip_quote_blocks(raw)
-    if len(stripped) < 15:
+def parse_picks(raw: str, thread_title: str = "", target_date: str = "") -> dict:
+    stripped = strip_quote_blocks(normalize_forum_text(raw))
+    if len(stripped) < 8 and not re.search(r"\b(?:BTL|STL|Btl|Stl)\b", stripped, re.I):
         return {}
-    scoped = latest_day_section(stripped)
+    if target_date:
+        scoped = day_section_for_target_date(stripped, target_date) or latest_day_section(stripped)
+    else:
+        scoped = latest_day_section(stripped)
     picks: dict = {}
     stl = extract_stl(scoped)
     if stl:
         picks["stl"] = stl
-    btl = extract_btl(scoped)
+    btl: Optional[list[str]] = None
+    if target_date:
+        btl = extract_btl_for_target_date(stripped, target_date)
+    if not btl:
+        btl = extract_btl(scoped)
     if btl:
         picks["btl"] = btl
     std_de = extract_std_de(scoped)
@@ -431,13 +657,7 @@ def parse_lan_range_end_date(fragment: str, year: int, month: int) -> Optional[s
 
 
 def split_chan_nuoi_lan_sections(text: str) -> list[tuple[int, str]]:
-    parts = re.split(r"(?=Lần\s*\d+\s*:)", text, flags=re.I)
-    out: list[tuple[int, str]] = []
-    for part in parts:
-        m = re.match(r"Lần\s*(\d+)\s*:\s*(.*)", part.strip(), re.I | re.S)
-        if m:
-            out.append((int(m.group(1)), m.group(2).strip()))
-    return out
+    return split_lan_sections(text)
 
 
 def expand_chan_nuoi_posts_by_lan(
@@ -460,6 +680,33 @@ def expand_chan_nuoi_posts_by_lan(
         lan_best: dict[int, tuple[str, list[str]]] = {}
         for post in posts:
             for lan_no, section in split_chan_nuoi_lan_sections(post.raw_content):
+                btl_num = _btl_num_from_lan_section(section)
+                dr = parse_lan_day_range(section, year, month)
+
+                if btl_num and dr:
+                    dr_y, dr_m, d0, d1 = dr
+                    for day in range(d0, d1 + 1):
+                        try:
+                            td = date(dr_y, dr_m, day)
+                            if td.weekday() == 6:
+                                continue
+                            tkey = td.isoformat()
+                            bucket = by_date.setdefault(tkey, {})
+                            pick_key = (user, slug)
+                            synth = RawPost(
+                                post_id=f"{posts[-1].post_id}-lan{lan_no}-btl-{tkey}",
+                                user=user,
+                                posted_at_ms=synthetic_posted_at_ms(tkey),
+                                raw_content=f"BTL {btl_num}",
+                            )
+                            prev = bucket.get(pick_key)
+                            if prev and prev[0] >= lan_no:
+                                continue
+                            bucket[pick_key] = (lan_no, ("chan_nuoi", slug, synth))
+                        except ValueError:
+                            continue
+                    continue
+
                 target = parse_lan_range_end_date(section, year, month)
                 if not target:
                     continue
@@ -612,7 +859,7 @@ def posts_to_session_dict(
     for forum, slug, raw in raw_posts:
         if raw.posted_at_ms < start_ms or raw.posted_at_ms >= end_ms:
             continue
-        picks = parse_picks(raw.raw_content, slug)
+        picks = parse_picks(raw.raw_content, slug, target_date)
         if not picks:
             continue
         posts[raw.post_id] = {
