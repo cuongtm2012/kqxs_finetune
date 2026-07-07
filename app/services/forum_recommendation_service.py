@@ -565,7 +565,10 @@ def _de_top4_anti_consensus(
     - Use exclusion signal from dàn (numbers that many strong experts exclude)
     """
 
-    ALLOWED_FORUMS = frozenset({"thao_luan", "chan_nuoi", "mo_bat"})
+    # Requirement: đề top 4 candidates must come from khu Thảo luận only.
+    # Still track crowd popularity in both Thảo luận + Chăn nuôi for filtering.
+    TL_FORUM = "thao_luan"
+    CROWD_FORUMS = frozenset({"thao_luan", "chan_nuoi"})
 
     # Step 1: Build consensus + exclusion scores
     all_nums = [str(i).zfill(2) for i in range(100)]
@@ -574,13 +577,15 @@ def _de_top4_anti_consensus(
     inclusion = {n: 0.0 for n in all_nums}       # perf-weighted support of users who INCLUDE this number
     hi_perf_votes = {n: 0 for n in all_nums}     # count of high-perf users who include this number
     thao_luan_signal: set[str] = set()            # numbers picked in thao_luan forum (strong signal)
-    # Track popularity specifically inside chăn nuôi to filter crowd numbers there.
+    # Track popularity inside crowd forums (TL/CN) to filter "đám đông".
     cn_user_counts: dict[str, set[str]] = {n: set() for n in all_nums}
+    tl_user_counts: dict[str, set[str]] = {n: set() for n in all_nums}
 
     for row in dan_board or []:
         user = row["user"]
-        forum_kind = row.get("forum", "")
-        if forum_kind and forum_kind not in ALLOWED_FORUMS:
+        forum_kind = row.get("forum") or TL_FORUM
+        # Only accept TL as a positive signal; CN is only used for crowd filtering.
+        if forum_kind and forum_kind not in CROWD_FORUMS:
             continue
         nums = set(str(n).zfill(2) for n in (row.get("numbers") or []))
         dan_size = len(nums)
@@ -599,13 +604,14 @@ def _de_top4_anti_consensus(
         for n in range(100):
             num = str(n).zfill(2)
             if num in nums:
-                consensus[num] += 1
-                inclusion[num] += pw
-                if pw >= 0.5:
-                    hi_perf_votes[num] += 1
-                if forum_kind == "thao_luan":
+                if forum_kind == TL_FORUM:
+                    consensus[num] += 1
+                    inclusion[num] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[num] += 1
                     thao_luan_signal.add(num)
-                if forum_kind == "chan_nuoi":
+                    tl_user_counts[num].add(user)
+                elif forum_kind == "chan_nuoi":
                     cn_user_counts[num].add(user)
             else:
                 exclusion[num] += excl_weight_per_num
@@ -614,8 +620,8 @@ def _de_top4_anti_consensus(
     for p in picks:
         pt = p.get("pick_type", "")
         user = p["username"]
-        forum_kind = p.get("forum", "")
-        if forum_kind and forum_kind not in ALLOWED_FORUMS:
+        forum_kind = p.get("forum") or TL_FORUM
+        if forum_kind and forum_kind not in CROWD_FORUMS:
             continue
 
         if pt in DAN_PICK_TYPES:
@@ -631,13 +637,14 @@ def _de_top4_anti_consensus(
             for n in range(100):
                 num = str(n).zfill(2)
                 if num in nums:
-                    consensus[num] += 1
-                    inclusion[num] += pw
-                    if pw >= 0.5:
-                        hi_perf_votes[num] += 1
-                    if forum_kind == "thao_luan":
+                    if forum_kind == TL_FORUM:
+                        consensus[num] += 1
+                        inclusion[num] += pw
+                        if pw >= 0.5:
+                            hi_perf_votes[num] += 1
                         thao_luan_signal.add(num)
-                    if forum_kind == "chan_nuoi":
+                        tl_user_counts[num].add(user)
+                    elif forum_kind == "chan_nuoi":
                         cn_user_counts[num].add(user)
                 else:
                     exclusion[num] += excl_weight_per_num
@@ -649,13 +656,14 @@ def _de_top4_anti_consensus(
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
-                    consensus[n] += 1
-                    inclusion[n] += pw
-                    if pw >= 0.5:
-                        hi_perf_votes[n] += 1
-                    if forum_kind == "thao_luan":
+                    if forum_kind == TL_FORUM:
+                        consensus[n] += 1
+                        inclusion[n] += pw
+                        if pw >= 0.5:
+                            hi_perf_votes[n] += 1
                         thao_luan_signal.add(n)
-                    if forum_kind == "chan_nuoi":
+                        tl_user_counts[n].add(user)
+                    elif forum_kind == "chan_nuoi":
                         cn_user_counts[n].add(user)
 
         elif pt in frozenset({"de_dau", "de_tong", "btd_dau", "btd_de"}):
@@ -665,13 +673,14 @@ def _de_top4_anti_consensus(
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
-                    consensus[n] += 1
-                    inclusion[n] += pw
-                    if pw >= 0.5:
-                        hi_perf_votes[n] += 1
-                    if forum_kind == "thao_luan":
+                    if forum_kind == TL_FORUM:
+                        consensus[n] += 1
+                        inclusion[n] += pw
+                        if pw >= 0.5:
+                            hi_perf_votes[n] += 1
                         thao_luan_signal.add(n)
-                    if forum_kind == "chan_nuoi":
+                        tl_user_counts[n].add(user)
+                    elif forum_kind == "chan_nuoi":
                         cn_user_counts[n].add(user)
 
         elif pt == "std_de":
@@ -683,13 +692,14 @@ def _de_top4_anti_consensus(
                 for part in parts:
                     n = _norm_de(part.strip())
                     if n in consensus:
-                        consensus[n] += 1
-                        inclusion[n] += pw
-                        if pw >= 0.5:
-                            hi_perf_votes[n] += 1
-                        if forum_kind == "thao_luan":
+                        if forum_kind == TL_FORUM:
+                            consensus[n] += 1
+                            inclusion[n] += pw
+                            if pw >= 0.5:
+                                hi_perf_votes[n] += 1
                             thao_luan_signal.add(n)
-                        if forum_kind == "chan_nuoi":
+                            tl_user_counts[n].add(user)
+                        elif forum_kind == "chan_nuoi":
                             cn_user_counts[n].add(user)
 
     # Process forum dan_board (same exclusion logic)
@@ -719,10 +729,12 @@ def _de_top4_anti_consensus(
     # Step 2: Dynamic threshold
     anti_threshold = _anti_threshold(consensus)
     cn_votes = {n: len(cn_user_counts[n]) for n in all_nums}
-    cn_nonzero = sorted(v for v in cn_votes.values() if v > 0)
-    cn_crowd_threshold = 3
-    if cn_nonzero:
-        cn_crowd_threshold = max(3, cn_nonzero[len(cn_nonzero) // 2] + 1)
+    tl_votes = {n: len(tl_user_counts[n]) for n in all_nums}
+    crowd_votes = {n: cn_votes[n] + tl_votes[n] for n in all_nums}
+    crowd_nonzero = sorted(v for v in crowd_votes.values() if v > 0)
+    crowd_threshold = 3
+    if crowd_nonzero:
+        crowd_threshold = max(3, crowd_nonzero[len(crowd_nonzero) // 2] + 1)
 
     # Step 3: Score & rank
     scores = {}
@@ -731,8 +743,8 @@ def _de_top4_anti_consensus(
         if consensus[n] < 1:
             continue  # no one picks it — likely random junk
 
-        # Filter out numbers that are too popular inside chăn nuôi, unless they have thao_luan signal.
-        if cn_votes[n] >= cn_crowd_threshold and n not in thao_luan_signal:
+        # Filter out numbers too popular in TL/CN crowd, unless they have TL signal.
+        if crowd_votes[n] >= crowd_threshold and n not in thao_luan_signal:
             continue
 
         if consensus[n] >= anti_threshold:
@@ -759,7 +771,7 @@ def _de_top4_anti_consensus(
         for n in all_nums:
             if consensus[n] < 1:
                 continue
-            if cn_votes[n] >= cn_crowd_threshold and n not in thao_luan_signal:
+            if crowd_votes[n] >= crowd_threshold and n not in thao_luan_signal:
                 continue
             if consensus[n] >= threshold_fallback:
                 # Skip threshold for thao_luan signal
