@@ -37,7 +37,7 @@ Sau 18:30 ICT, nếu session local thiếu hoặc chưa có post thảo luận, 
 
 Poll SHALL NOT chặn render lần đầu khi API đã có data:
 1. Fetch recommendations → render ngay nếu `has_forum_session` hoặc `expert_count > 0`
-2. Poll forum (timeout 45s) + sync session nếu cần
+2. Poll forum (timeout 120s) + sync session **chỉ khi posts > 0** nếu cần
 3. Re-fetch + re-render
 
 `pushSessionToApi` lỗi SHALL NOT làm mất data đã render — chỉ bỏ qua sync.
@@ -47,6 +47,21 @@ Poll SHALL NOT chặn render lần đầu khi API đã có data:
 - WHEN poll timeout
 - THEN vẫn hiển thị data API
 - AND hint poll lỗi (nếu chưa có data local)
+
+---
+
+### REQ-RT-006: Không sync session rỗng
+
+`pushSessionToApi` SHALL return `false` khi `Object.keys(session.posts).length === 0` (kể cả `force: true`).
+
+Tab Đề xuất SHALL chỉ gọi `syncSessionOptional` sau poll khi `sessionPostCount(session) > 0`.
+
+`collector.runPollCycle` SHALL chỉ `syncSessionToApi` khi `postCount > 0`.
+
+**Scenario: Poll fail 0 posts**
+- WHEN poll xong, session `posts: {}`
+- THEN không `POST /forum/picks`
+- AND `last_sync_status` = `Skipped empty session (0 posts)`
 
 ---
 

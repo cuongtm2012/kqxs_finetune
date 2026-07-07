@@ -387,7 +387,7 @@ export function extractDe1So(text: string): string[] {
 }
 
 function danExtractChunk(text: string): string {
-  m = text.match(/(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)?\s*:\s*/i);
+  let m = text.match(/(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)?\s*:\s*/i);
   if (m && m.index !== undefined) return text.slice(m.index + m[0].length);
   m = text.match(/(?:dàn|dan)\s*(?:đề|de)(?:\s+\d+\s*s(?:ố)?)\s+/i);
   if (m && m.index !== undefined) return text.slice(m.index + m[0].length);

@@ -136,3 +136,19 @@ Bổ sung `post_count` và `coverage` trong response (REQ-ISP-002).
 ### REQ-ST-001: Tab Kết quả (mở rộng)
 
 Document rõ: nguồn pick = Thu thập; hiển thị `coverage` hint (xem `score-tab-completeness`).
+
+---
+
+### REQ-ISP-005: Empty session sync guard (v1.5.5+)
+
+| Layer | Rule |
+|-------|------|
+| Extension `pushSessionToApi` | Skip khi `posts` rỗng |
+| Extension `loadRecommendations` | Sync sau poll chỉ khi `posts > 0` |
+| Extension `collector` | `syncSessionToApi` chỉ khi `postCount > 0` |
+| API `ingest_collect_session` | HTTP 400 nếu `posts` rỗng và DB đã có picks/session posts (REQ-FI-003) |
+
+**Scenario: Chấm kết quả không bị wipe**
+- GIVEN server backfill 90 posts
+- WHEN extension poll fail và cố sync `{}`
+- THEN API 400 OR extension skip — data server giữ nguyên

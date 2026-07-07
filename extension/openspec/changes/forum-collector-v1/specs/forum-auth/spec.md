@@ -66,7 +66,35 @@ Login SHALL thực hiện qua XenForo form chuẩn:
 - GIVEN credentials sai hoặc forum trả lỗi
 - WHEN POST login
 - THEN `auth_status = "error"` AND popup hiển thị "Đăng nhập forum thất bại"
-- AND poll bị skip cho đến khi login lại thành công
+- AND poll **vẫn tiếp tục** crawl nội dung công khai (thread không cần login)
+- AND `last_poll_status` MAY = `login_retry_public`
+
+---
+
+### REQ-AUTH-006: Tab-context HTML fetch (v1.5.5+)
+
+Service worker `fetch()` không chia sẻ cookie forum đầy đủ. Extension SHALL ưu tiên fetch HTML qua tab `forumketqua.net`:
+
+1. `ensureForumTab()` — mở/reuse tab forum (inactive)
+2. `chrome.scripting.executeScript({ world: "MAIN", func: fetch(url, {credentials:"include"}) })` — primary
+3. Fallback: content script message `FETCH_FORUM_HTML`
+4. Fallback cuối: service worker `forumFetch()`
+
+`fetchForumHtml()` chấp nhận HTML khi `pageHasReadableForumContent(html)` (có `post-*`, thread links, hoặc pageNav).
+
+**Scenario: Poll force**
+- WHEN `runPollCycle({ force: true })`
+- THEN `clearForumHtmlCache()` AND `ensureForumTab()` trước crawl
+
+---
+
+### REQ-AUTH-007: Login page false positive
+
+`isLoginPage()` SHALL NOT trả `true` khi:
+- `isLoggedInHtml(html)`, hoặc
+- `pageHasReadableForumContent(html)` (thread công khai có posts dù footer có form login ẩn)
+
+CSRF token: `extractXfToken` SHALL match `[_\-]` trong `csrf=` embed (Google login link).
 
 ---
 

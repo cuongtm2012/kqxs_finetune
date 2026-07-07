@@ -8,7 +8,8 @@ import {
   isPastFinalizeGrace,
   shouldFinalize,
 } from "./date-window.js";
-import { ensureLoggedIn, fetchForumHtml } from "./forum-auth.js";
+import { clearForumHtmlCache, ensureLoggedIn, fetchForumHtml } from "./forum-auth.js";
+import { ensureForumTab } from "./forum-tabs.js";
 import {
   extractPostsFromHtml,
   getLastPageFromHtml,
@@ -251,6 +252,14 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   const now = new Date();
   const targetDate = getTargetDate(now, settings.timezone);
   const force = options.force === true;
+  if (force) {
+    clearForumHtmlCache();
+    try {
+      await ensureForumTab();
+    } catch (e) {
+      console.warn("[ForumCollector] ensureForumTab", e);
+    }
+  }
   const runtime = await getRuntimeStatus();
   const rolledOver = Boolean(runtime.target_date && runtime.target_date !== targetDate);
 
@@ -267,15 +276,13 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     }
   }
 
-  const loggedIn = await ensureLoggedIn();
-  if (!loggedIn) {
+  const authOk = await ensureLoggedIn();
+  if (!authOk) {
     await patchRuntimeStatus({
-      collect_status: "idle",
-      last_error: "Login failed",
-      last_poll_status: "login_failed",
-      last_poll_at: new Date().toISOString(),
+      auth_status: "error",
+      last_error: "Đăng nhập forum thất bại — vẫn thử crawl nội dung công khai",
+      last_poll_status: "login_retry_public",
     });
-    return { added: 0, status: "login_failed" };
   }
 
   let session = await loadOrCreateSession(targetDate);
@@ -338,8 +345,9 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     ? { startMs: 0, endMs: Number.MAX_SAFE_INTEGER }
     : getWindowBoundsMs(targetDate, settings.timezone);
   const threads = threadsEarly;
+  const missingThaoLuan = !threads.some((t) => t.forum === "thao_luan");
 
-  if (!threads.some((t) => t.forum === "thao_luan")) {
+  if (missingThaoLuan && threads.length === 0) {
     await patchRuntimeStatus({
       target_date: targetDate,
       collect_status: "waiting_thread",
@@ -351,11 +359,13 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   }
 
   let totalAdded = 0;
+  let crawlError = "";
   for (const thread of threads) {
     try {
       totalAdded += await crawlThreadPage(thread, session, startMs, endMs, force, targetDate);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (!crawlError) crawlError = `${thread.forum}: ${msg}`;
       if (msg === "LOGIN_FAILED" || msg === "NOT_LOGGED_IN") {
         await ensureLoggedIn();
       }
@@ -365,7 +375,8 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
 
   session.summary = buildSummary(session, settings);
   await saveSession(session);
-  if (settings.auto_sync) {
+  const postCount = Object.keys(session.posts).length;
+  if ((settings.auto_sync || force) && postCount > 0) {
     await syncSessionToApi(session);
   }
   await pruneOldSessions();
@@ -379,12 +390,19 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
     post_count: Object.keys(session.posts).length,
     new_posts_last_poll: totalAdded,
     last_poll_at: new Date().toISOString(),
-    last_error: undefined,
+    last_error:
+      postCount === 0 && crawlError
+        ? crawlError
+        : postCount === 0 && totalAdded === 0
+          ? "Không lấy được post — mở forumketqua.net trong Chrome rồi Poll lại"
+          : undefined,
     last_poll_status: rolledOver
       ? "rolled_over"
-      : stillBackfilling && afterFinalizeTime
-        ? `backfilling (+${totalAdded})`
-        : `collecting (+${totalAdded})`,
+      : missingThaoLuan
+        ? `waiting_thread (+${totalAdded})`
+        : stillBackfilling && afterFinalizeTime
+          ? `backfilling (+${totalAdded})`
+          : `collecting (+${totalAdded})`,
   });
 
   return { added: totalAdded, status: collectStatus };

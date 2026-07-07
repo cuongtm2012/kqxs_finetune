@@ -130,6 +130,13 @@ h1 {
   color: var(--color-text);
 }
 
+#ext-version {
+  font-size: var(--scale-sm);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  margin-left: 6px;
+}
+
 .header-actions {
   display: flex;
   align-items: center;

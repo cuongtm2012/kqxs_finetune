@@ -45,16 +45,28 @@ Parser SHALL loại nội dung quote/reply trước khi extract pick.
 - WHEN parse
 - THEN `picks: {}` cho post reply
 
-**Scenario: Post gốc vẫn parse**
+---
+
+### REQ-PP-004: `danExtractChunk` strict mode
+
+`danExtractChunk` (TS) / `_dan_extract_chunk` (Python) SHALL khai báo biến match (`let m` / `m = re.search`) trước khi dùng — ES module strict mode.
+
+**Scenario: Post mở bát có dàn đề**
+- GIVEN post `mo_bat` chứa header `Dàn đề 40s: ...`
+- WHEN `parsePicksFromContent`
+- THEN không throw `ReferenceError: m is not defined`
+- AND `dan_de` extract bình thường
+
+**Scenario: Post gốc vẫn parse (quote strip)**
 - GIVEN post gốc `BTL :87` không nằm trong quote
 - WHEN parse
 - THEN `btl: ['87']`
 
 ---
 
-### REQ-PP-004: Parity Extension ↔ Python
+### REQ-PP-005: Parity Extension ↔ Python
 
-`extension/src/lib/pick-parser.ts` và `app/services/forum_crawl_service.py` SHALL cho cùng output với cùng `raw_content` cho các case REQ-PP-001–003.
+`extension/src/lib/pick-parser.ts` và `app/services/forum_crawl_service.py` SHALL cho cùng output với cùng `raw_content` cho các case REQ-PP-001–004.
 
 **Scenario: Regression test**
 - GIVEN fixture từ post `3920151`, `3920142`, `3920181`
@@ -63,7 +75,7 @@ Parser SHALL loại nội dung quote/reply trước khi extract pick.
 
 ---
 
-### REQ-PP-005: Multi-Day Post (giữ fix DaiLoan)
+### REQ-PP-006: Multi-Day Post (giữ fix DaiLoan)
 
 Parser SHALL chỉ lấy section `Ngày DD/M` khớp `target_date` và BTL từ dòng BTL cuối section đó (hành vi đã fix — regression).
 

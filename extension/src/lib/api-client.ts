@@ -9,6 +9,14 @@ export async function pushSessionToApi(
   const settings = await getSettings();
   if (!options.force && !settings.auto_sync) return false;
 
+  const postCount = Object.keys(session.posts || {}).length;
+  if (postCount === 0) {
+    await patchRuntimeStatus({
+      last_sync_status: "Skipped empty session (0 posts)",
+    });
+    return false;
+  }
+
   let lastError = "";
   for (const base of apiBases(settings)) {
     const url = `${base}/forum/picks`;
@@ -17,6 +25,7 @@ export async function pushSessionToApi(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(session),
+        timeoutMs: 120_000,
       });
       if (res.error) {
         lastError = res.error;

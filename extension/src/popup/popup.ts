@@ -81,6 +81,7 @@ function pollStatusLabel(status: string): string {
   const map: Record<string, string> = {
     collecting: "Đang thu thập",
     login_failed: "Đăng nhập thất bại",
+    login_retry_public: "Đăng nhập lỗi — crawl công khai",
     waiting_thread: "Chưa có topic thảo luận",
     outside_window: "Ngoài khung giờ",
     finalized: "Đã chốt",
@@ -102,7 +103,7 @@ async function send(type: string, payload: Record<string, unknown> = {}) {
   return chrome.runtime.sendMessage({ type, ...payload });
 }
 
-const POLL_TIMEOUT_MS = 45_000;
+const POLL_TIMEOUT_MS = 120_000;
 
 async function pollNowWithTimeout(ms = POLL_TIMEOUT_MS): Promise<unknown> {
   return Promise.race([
@@ -1561,7 +1562,7 @@ async function loadRecommendations(options: { forcePoll?: boolean } = {}): Promi
       }
     }
 
-    if (session && (shouldPoll || options.forcePoll)) {
+    if (session && (shouldPoll || options.forcePoll) && sessionPostCount(session) > 0) {
       $("reco-loading-text").textContent = "Đang sync session lên API…";
       await syncSessionOptional(session, true);
       data = await fetchRecommendationsAndSyncUrl(target, settings);
@@ -1743,13 +1744,26 @@ $("btn-poll").addEventListener("click", async () => {
   const btn = $("btn-poll");
   btn.textContent = "Đang poll…";
   try {
-    const result = (await send("POLL_NOW")) as { status?: string; added?: number; error?: string };
+    const result = (await pollNowWithTimeout()) as { status?: string; added?: number; error?: string };
     if (result?.error) {
       $("last-poll-status").textContent = result.error;
     } else if (result?.status) {
       const label = pollStatusLabel(result.status);
       const extra = result.added ? ` (+${result.added})` : "";
       $("last-poll-status").textContent = `${label}${extra}`;
+    }
+
+    const settings = await getSettings();
+    const target = getTargetDate(new Date(), settings.timezone);
+    const session = await getSession(target);
+    if (session && Object.keys(session.posts).length > 0) {
+      btn.textContent = "Đang sync API…";
+      const synced = await syncSessionOptional(session, true);
+      if (!synced) {
+        const err = $("error");
+        err.textContent = "Poll xong nhưng sync API thất bại — kiểm tra server :18715";
+        err.classList.remove("hidden");
+      }
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1807,6 +1821,8 @@ toggleSettingsBtn.addEventListener("click", () => {
 
 async function initPopup(): Promise<void> {
   await ensureConfigSeeded();
+  const ver = chrome.runtime.getManifest().version;
+  $("ext-version").textContent = `v${ver}`;
   recoExpertSort = await getRecoExpertSort();
   recoScoringMode = await getRecoScoringMode();
   updateRecoExpertSortUi();

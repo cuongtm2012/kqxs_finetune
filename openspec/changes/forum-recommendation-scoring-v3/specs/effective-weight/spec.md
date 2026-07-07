@@ -114,3 +114,19 @@ Reuse `expert_performance()` lookup chain (first-match, v2).
 ### REQ-EW-007: Canonical username
 
 Mọi lookup SHALL qua `canonical_username()` trước DB/JSON.
+
+---
+
+### REQ-EW-008: Win rate cao ≠ top hiệu lực (blend)
+
+Thứ hạng bảng cao thủ mặc định sort `effective_weight` desc, **không** sort `rate_pct` thuần.
+
+**Scenario: Qtv1 BTL 75% (3/4) không lên top**
+- GIVEN `expert_weight("Qtv1", "btl") == 0.53`
+- AND `expert_performance("Qtv1", "btl", "rolling_90d")` = `3/4` (75%)
+- AND `expert_weight("nhcsxh", "btl") == 1.0` với perf `2/3` (67%)
+- WHEN sort `live_experts` mode `blend`
+- THEN `nhcsxh.effective_weight` > `Qtv1.effective_weight`
+- BECAUSE `effective = w_manual × blend_factor` và Wilson lower bound + `ramp` (total < MIN_SAMPLE) giảm measured contribution
+
+User sort `performance` → Qtv1 lên theo % trúng loại pick tương ứng.

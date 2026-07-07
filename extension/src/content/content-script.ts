@@ -20,7 +20,7 @@ function extractCsrf(html: string): string | null {
   if (fromInput) return fromInput;
   const fromJs = html.match(/_csrfToken:\s*"([^"]+)"/i)?.[1];
   if (fromJs) return fromJs;
-  return html.match(/csrf=([A-Za-z0-9]+)/i)?.[1] || null;
+  return html.match(/csrf=([A-Za-z0-9_\-]+)/i)?.[1] || null;
 }
 
 function hideLoginOverlay(): void {
@@ -55,6 +55,7 @@ async function loginInTab(auth: AuthPayload): Promise<{ ok: boolean; error?: str
       login: auth.username,
       password: auth.password,
       remember: auth.remember ? "1" : "0",
+      cookie_check: "1",
       _xfToken: token,
       redirect: location.pathname + location.search,
     });
@@ -85,6 +86,16 @@ async function loginInTab(auth: AuthPayload): Promise<{ ok: boolean; error?: str
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "FETCH_FORUM_HTML") {
+    const url = String(message.url || "");
+    fetch(url, { credentials: "include" })
+      .then((res) => res.text())
+      .then((html) => sendResponse({ ok: true, html }))
+      .catch((e) =>
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }),
+      );
+    return true;
+  }
   if (message?.type === "LOGIN_IN_TAB") {
     loginInTab(message.auth as AuthPayload).then(sendResponse);
     return true;

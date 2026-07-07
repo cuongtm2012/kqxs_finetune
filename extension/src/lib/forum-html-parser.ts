@@ -126,11 +126,20 @@ export function isLoggedInHtml(html: string): boolean {
   return /class="[^"]*\bLoggedIn\b/i.test(html);
 }
 
+/** Thread/listing pages embed a hidden login form — do not treat that as a login gate. */
+export function pageHasReadableForumContent(html: string): boolean {
+  if (/id="post-\d+"/i.test(html)) return true;
+  if (extractThreadLinks(html).length > 0) return true;
+  if (/class="pageNav/i.test(html) && /threads\//i.test(html)) return true;
+  return false;
+}
+
 export function isLoginPage(html: string): boolean {
   if (isLoggedInHtml(html)) return false;
+  if (pageHasReadableForumContent(html)) return false;
   return (
     /class="[^"]*loginForm/i.test(html) ||
-    (/\/login\/?"/i.test(html) && /name="login"/i.test(html))
+    (/id="ctrl_pageLogin_login"/i.test(html) && /id="LoginControl"/i.test(html))
   );
 }
 
@@ -141,7 +150,7 @@ export function extractXfToken(html: string): string | null {
   const fromJs = html.match(/_csrfToken:\s*"([^"]+)"/i)?.[1];
   if (fromJs) return fromJs;
 
-  const fromEmbed = html.match(/csrf=([A-Za-z0-9]+)/i)?.[1];
+  const fromEmbed = html.match(/csrf=([A-Za-z0-9_\-]+)/i)?.[1];
   if (fromEmbed) return fromEmbed;
 
   return null;

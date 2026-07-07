@@ -161,6 +161,18 @@ def ingest_collect_session(body: dict) -> dict:
         raise ValueError("target_date required")
 
     posts = body.get("posts") or {}
+    if not posts:
+        existing_picks = forum_repo.get_user_picks(target_date)
+        existing_session = forum_repo.get_session(target_date)
+        prev_posts = {}
+        if existing_session:
+            prev_posts = (existing_session.get("payload") or {}).get("posts") or {}
+        if existing_picks or prev_posts:
+            raise ValueError(
+                f"refusing empty session for {target_date} "
+                f"(existing {len(existing_picks)} picks, {len(prev_posts)} posts)"
+            )
+
     _refresh_posts_picks(posts, target_date)
     pick_map = _extract_pick_rows(posts, target_date)
     picks = list(pick_map.values())

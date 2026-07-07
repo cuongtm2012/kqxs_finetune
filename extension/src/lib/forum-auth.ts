@@ -1,6 +1,11 @@
 import { BASE_URL } from "../types/forum.js";
-import { extractXfToken, isLoggedInHtml, isLoginPage } from "./forum-html-parser.js";
-import { loginInForumTab, syncForumTabUi } from "./forum-tabs.js";
+import {
+  extractXfToken,
+  isLoggedInHtml,
+  isLoginPage,
+  pageHasReadableForumContent,
+} from "./forum-html-parser.js";
+import { loginInForumTab, syncForumTabUi, fetchForumHtmlInTab } from "./forum-tabs.js";
 import { getForumAuth, patchRuntimeStatus } from "./storage.js";
 
 const UA =
@@ -8,6 +13,10 @@ const UA =
 
 const HTML_CACHE_TTL_MS = 5 * 60 * 1000;
 const htmlCache = new Map<string, { html: string; at: number }>();
+
+export function clearForumHtmlCache(): void {
+  htmlCache.clear();
+}
 
 export async function forumFetch(url: string, init: RequestInit = {}): Promise<Response> {
   return fetch(url, {
@@ -32,10 +41,21 @@ export async function fetchForumHtml(
     return cached.html;
   }
 
+  try {
+    const tabHtml = await fetchForumHtmlInTab(url);
+    if (tabHtml && pageHasReadableForumContent(tabHtml)) {
+      htmlCache.set(url, { html: tabHtml, at: Date.now() });
+      return tabHtml;
+    }
+  } catch {
+    /* fall through to service worker fetch */
+  }
+
   let res = await forumFetch(url);
   let html = await res.text();
   const needsLogin =
     !isLoggedInHtml(html) &&
+    !pageHasReadableForumContent(html) &&
     ((res.redirected && res.url.includes("/login")) || isLoginPage(html));
   if (needsLogin) {
     if (!retryLogin) throw new Error("NOT_LOGGED_IN");
@@ -43,7 +63,13 @@ export async function fetchForumHtml(
     if (!ok) throw new Error("LOGIN_FAILED");
     res = await forumFetch(url);
     html = await res.text();
-    if (!isLoggedInHtml(html) && isLoginPage(html)) throw new Error("LOGIN_FAILED");
+    if (
+      !isLoggedInHtml(html) &&
+      !pageHasReadableForumContent(html) &&
+      isLoginPage(html)
+    ) {
+      throw new Error("LOGIN_FAILED");
+    }
   }
   htmlCache.set(url, { html, at: Date.now() });
   return html;
@@ -71,7 +97,7 @@ export async function ensureLoggedIn(): Promise<boolean> {
 
   // Ưu tiên login trong tab forum → cookie + UI đồng bộ với trang user đang xem
   const tabOk = await loginInForumTab(auth);
-  if (tabOk) {
+  if (tabOk && (await hasValidSession())) {
     await patchRuntimeStatus({
       auth_status: "logged_in",
       last_login_at: new Date().toISOString(),
@@ -90,6 +116,7 @@ export async function ensureLoggedIn(): Promise<boolean> {
       login: auth.username,
       password: auth.password,
       remember: auth.remember ? "1" : "0",
+      cookie_check: "1",
       _xfToken: token,
       redirect: "",
     });
