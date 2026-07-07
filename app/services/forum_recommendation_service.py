@@ -42,6 +42,17 @@ class ScoringContext:
             user, pick_type, mode=self.mode, period_label=self.period_label,
         )
 
+    def perf_w(self, user: str, pick_type: str) -> float:
+        """
+        Performance-first weight (independent of manual W).
+
+        Uses measured mode so that experts with higher observed hit-rate (with
+        Wilson + sample ramp) are prioritized even if manual weights are low.
+        """
+        return expert_effective_weight(
+            user, pick_type, mode="measured", period_label=self.period_label,
+        )
+
 
 def resolve_scoring_context(
     scoring_mode: str | None = None,
@@ -282,6 +293,88 @@ def _aggregate_loto_consensus(picks: list[dict], ctx: ScoringContext) -> list[di
         return (-votes, wsum, loto)
 
     rows.sort(key=_sort_key)
+    return rows
+
+
+def _aggregate_loto_scores_perf_first(picks: list[dict], ctx: ScoringContext) -> list[dict]:
+    """
+    Panel 1 (Theo cao thủ): prioritize experts with higher measured performance.
+
+    Score per number = sum(perf_w) over unique users; tie-break by vote count then
+    by manual weight sum for stability.
+    """
+    scores: dict[str, dict] = {}
+    for p in dedupe_picks_by_user(picks):
+        pt = p.get("pick_type", "")
+        if pt not in LOTO_PICK_TYPES:
+            continue
+        user = p["username"]
+        pw = float(ctx.perf_w(user, pt))
+        mw = float(expert_weight(user, pt))
+        for num in p.get("numbers") or []:
+            n = _norm_loto(num)
+            if n not in scores:
+                scores[n] = {
+                    "loto": n,
+                    "score": 0.0,       # perf score sum
+                    "votes": 0,         # unique users
+                    "manual_sum": 0.0,  # tie-break only
+                    "users": [],
+                    "types": [],
+                }
+            if user not in scores[n]["users"]:
+                scores[n]["users"].append(user)
+                scores[n]["votes"] += 1
+                scores[n]["score"] += pw
+                scores[n]["manual_sum"] += mw
+            if pt not in scores[n]["types"]:
+                scores[n]["types"].append(pt)
+    rows = list(scores.values())
+    for r in rows:
+        r["users"] = list(dict.fromkeys(r["users"]))
+        r["types"] = list(dict.fromkeys(r["types"]))
+        r["reasons"] = [f"{int(r.get('votes') or 0)} cao thủ · perf {float(r.get('score') or 0):.2f}"]
+    rows.sort(
+        key=lambda r: (
+            -float(r.get("score") or 0),
+            -int(r.get("votes") or 0),
+            -float(r.get("manual_sum") or 0),
+            r["loto"],
+        ),
+    )
+    return rows
+
+
+def _aggregate_loto_consensus_perf_first(picks: list[dict], ctx: ScoringContext) -> list[dict]:
+    """
+    Panel 2 (Đồng thuận): prioritize numbers picked by many high-performance experts.
+
+    Rank by perf_score sum first, then votes.
+    """
+    scores: dict[str, dict] = {}
+    for p in dedupe_picks_by_user(picks):
+        pt = p.get("pick_type", "")
+        if pt not in LOTO_PICK_TYPES:
+            continue
+        user = p["username"]
+        pw = float(ctx.perf_w(user, pt))
+        for num in p.get("numbers") or []:
+            n = _norm_loto(num)
+            if n not in scores:
+                scores[n] = {"loto": n, "score": 0.0, "votes": 0, "users": [], "types": []}
+            if user not in scores[n]["users"]:
+                scores[n]["users"].append(user)
+                scores[n]["votes"] += 1
+                scores[n]["score"] += pw
+            if pt not in scores[n]["types"]:
+                scores[n]["types"].append(pt)
+    rows = list(scores.values())
+    for r in rows:
+        r["users"] = list(dict.fromkeys(r["users"]))
+        r["types"] = list(dict.fromkeys(r["types"]))
+        votes = int(r.get("votes") or 0)
+        r["reasons"] = [f"{votes} cao thủ (perf-weighted)"]
+    rows.sort(key=lambda r: (-float(r.get("score") or 0), -int(r.get("votes") or 0), r["loto"]))
     return rows
 
 
@@ -733,13 +826,17 @@ def build_recommendations(
         picks_rows, scoring_mode=ctx.mode, period_label=ctx.period_label,
     )
 
-    ranked_loto = _aggregate_loto_scores(picks_rows, ctx)
-    ranked_consensus = _aggregate_loto_consensus(picks_rows, ctx)
+    # Panel 1: performance-first (expert performance dominates)
+    ranked_loto = _aggregate_loto_scores_perf_first(picks_rows, ctx)
+
+    # Panel 2: consensus, but weighted by expert performance
+    ranked_consensus = _aggregate_loto_consensus_perf_first(picks_rows, ctx)
     btl_lo = _best_btl(picks_rows, ctx) or (ranked_loto[0]["loto"] if ranked_loto else None)
     btl_consensus = _best_btl_consensus(picks_rows, ctx) or (
         ranked_consensus[0]["loto"] if ranked_consensus else None
     )
-    de_top = _de_top4(picks_rows, forum, dan_board, ctx)
+    # Both panels use anti-consensus for đề top 4
+    de_top = _de_top4_anti_consensus(picks_rows, forum, dan_board, ctx)
     de_consensus = _de_top4_anti_consensus(picks_rows, forum, dan_board, ctx)
     cham_leaders = _de_cham_leaders(picks_rows, forum, ctx)
     cham_consensus = _de_cham_consensus(picks_rows, forum)
