@@ -778,6 +778,34 @@ def build_recommendations(
     forum["target_date"] = target_date
     raw_picks = forum_repo.get_user_picks(target_date)
 
+    # If Thảo luận picks look incomplete (common when extension poll/sync was partial),
+    # refresh Thảo luận server-side once to ensure recommendations aren't built from stale data.
+    TL_DE_TYPES = frozenset({"btd", "btd_de", "std_de", "de_dau", "de_tong", "btd_dau", "de_cham", "de_list"})
+    tl_de = [
+        p for p in raw_picks
+        if p.get("forum") == "thao_luan" and p.get("pick_type") in TL_DE_TYPES
+    ]
+    if session is not None and not tl_de:
+        try:
+            from app.services.forum_crawl_service import (
+                crawl_thread_all_pages,
+                discover_daily_thread_slug,
+                posts_to_session_dict,
+            )
+            from app.services.forum_ingest_service import ingest_collect_session
+
+            slug = discover_daily_thread_slug(target_date, "thao_luan")
+            if slug:
+                raw_posts = [("thao_luan", slug, p) for p in crawl_thread_all_pages(slug)]
+                refreshed = posts_to_session_dict(target_date, raw_posts)
+                if refreshed.get("posts"):
+                    ingest_collect_session(refreshed)
+                    # Reload picks after refresh
+                    raw_picks = forum_repo.get_user_picks(target_date)
+        except Exception:
+            # Best-effort refresh; fall back to existing DB state.
+            pass
+
     # Enrich pick rows with thread info (topic) using forum session payload.
     # We already store post_id in forum_user_picks, and session payload stores {post_id -> thread_id}.
     post_to_thread: dict[str, dict[str, str]] = {}
