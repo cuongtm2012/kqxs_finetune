@@ -29,6 +29,34 @@ import {
 import type { ExtensionSettings } from "../types/forum.js";
 
 const DAILY_FORUMS = new Set<ForumKey>(["mo_bat", "thao_luan"]);
+const THAO_LUAN_DE_TYPES = new Set([
+  "btd",
+  "btd_de",
+  "std_de",
+  "de_cham",
+  "de_dau",
+  "de_tong",
+  "btd_dau",
+  "de_list",
+]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function thaoLuanPostCount(session: CollectSession): number {
+  return Object.values(session.posts || {}).filter((p) => p.forum === "thao_luan").length;
+}
+
+function thaoLuanHasDeSignals(session: CollectSession): boolean {
+  for (const p of Object.values(session.posts || {})) {
+    if (p.forum !== "thao_luan") continue;
+    for (const k of Object.keys(p.picks || {})) {
+      if (THAO_LUAN_DE_TYPES.has(k)) return true;
+    }
+  }
+  return false;
+}
 
 async function finalizeCollectSession(
   session: CollectSession,
@@ -96,9 +124,21 @@ async function resolveThreads(
   if (!force && session.discovered_threads?.length) {
     return session.discovered_threads;
   }
-  const threads = await discoverAllThreads(targetDate, patterns);
-  session.discovered_threads = threads;
-  return threads;
+  // Force poll should be robust against transient listing fetch / tab injection races.
+  // Retry discovery a few times; prefer having at least the Thảo luận thread.
+  let last: DiscoveredThread[] = [];
+  for (let attempt = 0; attempt < (force ? 3 : 1); attempt += 1) {
+    const threads = await discoverAllThreads(targetDate, patterns);
+    last = threads;
+    const hasThaoLuan = threads.some((t) => t.forum === "thao_luan");
+    if (hasThaoLuan || threads.length > 0) {
+      session.discovered_threads = threads;
+      return threads;
+    }
+    await sleep(600);
+  }
+  session.discovered_threads = last;
+  return last;
 }
 
 async function loadOrCreateSession(targetDate: string): Promise<CollectSession> {
@@ -376,6 +416,24 @@ export async function runPollCycle(options: { force?: boolean } = {}): Promise<{
   session.summary = buildSummary(session, settings);
   await saveSession(session);
   const postCount = Object.keys(session.posts).length;
+
+  // When the user clicks "Poll ngay" (force), ensure Thảo luận is actually present;
+  // otherwise UI like đề top 4 can look "empty" even though forum has data.
+  if (force) {
+    const tlCount = thaoLuanPostCount(session);
+    if (tlCount === 0) {
+      await patchRuntimeStatus({
+        last_error:
+          "Poll xong nhưng không có post Thảo luận — mở thread Thảo luận trong Chrome rồi Poll lại.",
+      });
+    } else if (!thaoLuanHasDeSignals(session)) {
+      await patchRuntimeStatus({
+        last_error:
+          "Thảo luận đã có post nhưng chưa parse được chốt đề (BTD/BTĐ/STĐ/Chạm/Tổng/Đầu). Thử Poll lại sau 1–2 phút.",
+      });
+    }
+  }
+
   if ((settings.auto_sync || force) && postCount > 0) {
     await syncSessionToApi(session);
   }
