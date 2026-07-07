@@ -6,7 +6,11 @@ from pathlib import Path
 from app.db import fetch_all
 from app.repositories.draw_repo import draw_repo
 from app.services.expert_pick_eval import evaluate_picks_by_date, group_picks_by_date, pick_hit
-from app.services.expert_scorer import WEIGHTS_PATH, _load_weights, reload_weights
+from app.services.expert_scorer import (
+    GENERATED_WEIGHTS_PATH,
+    _load_weights,
+    set_use_generated_weights,
+)
 
 MIN_WEIGHT = 0.3
 MAX_WEIGHT = 1.0
@@ -52,7 +56,7 @@ def run_backtest(days: int = 90) -> dict:
 
 
 def suggest_weights(days: int = 90, blend: float = 0.35) -> dict[str, dict[str, float]]:
-    """Blend backtest rates with existing expert_weights.json."""
+    """Blend backtest rates with current weights snapshot (manual or generated)."""
     current = _load_weights()
     report = run_backtest(days)
     suggested: dict[str, dict[str, float]] = {}
@@ -78,7 +82,7 @@ def suggest_weights(days: int = 90, blend: float = 0.35) -> dict[str, dict[str, 
 
 def write_suggested_weights(days: int = 90, blend: float = 0.35) -> dict:
     suggested = suggest_weights(days=days, blend=blend)
-    path = Path(WEIGHTS_PATH)
+    path = Path(GENERATED_WEIGHTS_PATH)
     path.write_text(json.dumps(suggested, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    reload_weights()
+    set_use_generated_weights(True)
     return {"ok": True, "path": str(path), "user_count": len(suggested), "days": days, "blend": blend}

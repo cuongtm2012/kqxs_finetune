@@ -101,9 +101,33 @@ def get_draw_score(target_date: Optional[str] = Query(None)):
 
 
 @router.post("/score/run")
-def run_draw_score(target_date: Optional[str] = Query(None)):
+def run_draw_score(
+    target_date: Optional[str] = Query(None),
+    update_weights: bool = Query(True),
+    weights_days: int = Query(90, ge=7, le=365),
+    weights_blend: float = Query(0.35, ge=0.0, le=1.0),
+):
     d = target_date or date.today().isoformat()
-    return run_daily_settlement(d, prefer_mketqua=True)
+    scored = run_daily_settlement(d, prefer_mketqua=True)
+    if not update_weights:
+        return scored
+
+    if not scored.get("ok"):
+        scored["weights_update"] = {"ok": False, "skipped": "score_failed"}
+        return scored
+
+    try:
+        result = write_suggested_weights(days=weights_days, blend=weights_blend)
+        scored["weights_update"] = {
+            "ok": True,
+            "days": weights_days,
+            "blend": weights_blend,
+            "path": result.get("path"),
+            "user_count": result.get("user_count"),
+        }
+    except Exception as exc:
+        scored["weights_update"] = {"ok": False, "error": str(exc)}
+    return scored
 
 
 @router.post("/experts/weights/refresh")

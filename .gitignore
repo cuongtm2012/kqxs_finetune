@@ -12,3 +12,4 @@ __pycache__/
 extension/config/forum-auth.local.json
 extension/node_modules/
 extension/dist/
+app/data/expert_weights.generated.json

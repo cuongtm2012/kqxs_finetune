@@ -17,6 +17,9 @@ from app.services.expert_pick_eval import (
 logger = logging.getLogger(__name__)
 
 WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "data" / "expert_weights.json"
+GENERATED_WEIGHTS_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "expert_weights.generated.json"
+)
 ALIASES_PATH = Path(__file__).resolve().parent.parent / "data" / "expert_aliases.json"
 DEFAULT_UNKNOWN = 0.3
 SCORING_MODES = frozenset({"weight", "measured", "blend"})
@@ -25,6 +28,10 @@ MIN_SAMPLE = int(os.getenv("EXPERT_MIN_SAMPLE", "5"))
 BLEND_PRIOR = float(os.getenv("EXPERT_BLEND_PRIOR", "0.35"))
 WILSON_Z = float(os.getenv("EXPERT_WILSON_Z", "1.96"))
 MAX_WEIGHT = 1.0
+
+# Generated weights are opt-in at runtime.
+# This prevents local/generated artifacts from silently changing scoring in tests/dev.
+_USE_GENERATED_WEIGHTS = False
 
 
 def wilson_lower(hits: int, total: int, z: float = WILSON_Z) -> float:
@@ -118,12 +125,23 @@ def dedupe_picks_by_user(picks: list[dict]) -> list[dict]:
 
 @lru_cache(maxsize=1)
 def _load_weights() -> dict:
-    with open(WEIGHTS_PATH, encoding="utf-8") as f:
+    path = (
+        GENERATED_WEIGHTS_PATH
+        if (_USE_GENERATED_WEIGHTS and GENERATED_WEIGHTS_PATH.exists())
+        else WEIGHTS_PATH
+    )
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def reload_weights() -> None:
     _load_weights.cache_clear()
+
+
+def set_use_generated_weights(value: bool) -> None:
+    global _USE_GENERATED_WEIGHTS
+    _USE_GENERATED_WEIGHTS = bool(value)
+    reload_weights()
 
 
 def _user_is_dan_only(user: dict) -> bool:
