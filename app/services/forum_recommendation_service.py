@@ -557,12 +557,20 @@ def _de_top4_anti_consensus(
     dan_board: list[dict] | None,
     ctx: ScoringContext,
 ) -> list[str]:
-    """Anti-consensus de: chon so it duoc chon va bi nhieu nguoi loai tru."""
+    """
+    Anti-consensus đề top 4:
+
+    - Prefer numbers picked by high-performance experts (measured win-rate via Wilson + ramp)
+    - Exclude numbers picked by the crowd, unless they have strong high-perf support
+    - Use exclusion signal from dàn (numbers that many strong experts exclude)
+    """
 
     # Step 1: Build consensus + exclusion scores
     all_nums = [str(i).zfill(2) for i in range(100)]
     consensus = {n: 0 for n in all_nums}        # count of users who HAVE this number
     exclusion = {n: 0.0 for n in all_nums}       # total weight of users who EXCLUDE this number
+    inclusion = {n: 0.0 for n in all_nums}       # perf-weighted support of users who INCLUDE this number
+    hi_perf_votes = {n: 0 for n in all_nums}     # count of high-perf users who include this number
     thao_luan_signal: set[str] = set()            # numbers picked in thao_luan forum (strong signal)
 
     for row in dan_board or []:
@@ -572,17 +580,22 @@ def _de_top4_anti_consensus(
         if dan_size <= 0 or dan_size >= 100:
             continue  # skip invalid dans
 
-        w = row.get("weight") or expert_weight(user, row.get("pick_type", "dan_de"))
+        # For đề top4 we treat performance as the primary signal, independent of manual weights.
+        pt = row.get("pick_type", "dan_de")
+        pw = float(ctx.perf_w(user, pt))
         excluded_count = 100 - dan_size
         if excluded_count <= 0:
             continue
 
-        excl_weight_per_num = float(w) / excluded_count
+        excl_weight_per_num = pw / excluded_count
 
         for n in range(100):
             num = str(n).zfill(2)
             if num in nums:
                 consensus[num] += 1
+                inclusion[num] += pw
+                if pw >= 0.5:
+                    hi_perf_votes[num] += 1
             else:
                 exclusion[num] += excl_weight_per_num
 
@@ -597,47 +610,62 @@ def _de_top4_anti_consensus(
             dan_size = len(nums)
             if dan_size <= 0 or dan_size >= 100:
                 continue
-            w = ctx.scoring_w(user, pt if pt != "dan_de" else "dan_de")
+            pw = float(ctx.perf_w(user, pt if pt != "dan_de" else "dan_de"))
             excluded_count = 100 - dan_size
             if excluded_count <= 0:
                 continue
-            excl_weight_per_num = float(w) / excluded_count
+            excl_weight_per_num = pw / excluded_count
             for n in range(100):
                 num = str(n).zfill(2)
                 if num in nums:
                     consensus[num] += 1
+                    inclusion[num] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[num] += 1
                 else:
                     exclusion[num] += excl_weight_per_num
 
         elif pt == "btd":
             # BTD: strong signal — bump consensus + track thao_luan
             raw_nums = p.get("numbers") or []
+            pw = float(ctx.perf_w(user, "btd"))
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
                     consensus[n] += 1
+                    inclusion[n] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[n] += 1
                     if forum_kind == "thao_luan":
                         thao_luan_signal.add(n)
 
         elif pt in frozenset({"de_dau", "de_tong", "btd_dau", "btd_de"}):
             # Single digits (0-9) or 2-digit numbers.
             raw_nums = p.get("numbers") or []
+            pw = float(ctx.perf_w(user, pt))
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
                     consensus[n] += 1
+                    inclusion[n] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[n] += 1
                     if forum_kind == "thao_luan":
                         thao_luan_signal.add(n)
 
         elif pt == "std_de":
             # std_de: numbers come as pairs like "39-79", "14-41"
             raw_nums = p.get("numbers") or []
+            pw = float(ctx.perf_w(user, "std_de"))
             for token in raw_nums:
                 parts = str(token).replace(",", "-").split("-")
                 for part in parts:
                     n = _norm_de(part.strip())
                     if n in consensus:
                         consensus[n] += 1
+                        inclusion[n] += pw
+                        if pw >= 0.5:
+                            hi_perf_votes[n] += 1
                         if forum_kind == "thao_luan":
                             thao_luan_signal.add(n)
 
@@ -650,15 +678,18 @@ def _de_top4_anti_consensus(
         dan_size = len(nums)
         if dan_size <= 0 or dan_size >= 100:
             continue
-        w = expert_weight(user, "dan_de")
+        pw = float(ctx.perf_w(user, "dan_de"))
         excluded_count = 100 - dan_size
         if excluded_count <= 0:
             continue
-        excl_weight_per_num = float(w) / excluded_count
+        excl_weight_per_num = pw / excluded_count
         for n in range(100):
             num = str(n).zfill(2)
             if num in nums:
                 consensus[num] += 1
+                inclusion[num] += pw
+                if pw >= 0.5:
+                    hi_perf_votes[num] += 1
             else:
                 exclusion[num] += excl_weight_per_num
 
@@ -673,14 +704,16 @@ def _de_top4_anti_consensus(
             continue  # no one picks it — likely random junk
 
         if consensus[n] >= anti_threshold:
-            # Skip threshold for thao_luan signal numbers — strong signal
-            if n not in thao_luan_signal:
+            # Exclude crowd numbers unless backed by strong high-performance support.
+            if n not in thao_luan_signal and hi_perf_votes[n] < 2:
                 continue  # too popular — anti-consensus rule
 
         anti_score = 1.0 / (1.0 + consensus[n])     # inverse of popularity
         excl_score = exclusion[n]                     # weight of users who exclude it
+        incl_score = inclusion[n]                     # perf-weighted support
 
-        final_score = anti_score * 0.4 + excl_score * 0.6
+        # Prefer numbers chosen by high-performance experts, then exclusion, then anti-popularity.
+        final_score = incl_score * 0.55 + excl_score * 0.35 + anti_score * 0.10
 
         # Bonus for thao_luan signal: số được thảo luận chốt có tín hiệu mạnh hơn
         if n in thao_luan_signal:
@@ -696,11 +729,12 @@ def _de_top4_anti_consensus(
                 continue
             if consensus[n] >= threshold_fallback:
                 # Skip threshold for thao_luan signal
-                if n not in thao_luan_signal:
+                if n not in thao_luan_signal and hi_perf_votes[n] < 2:
                     continue
             anti_score = 1.0 / (1.0 + consensus[n])
             excl_score = exclusion[n]
-            final_score = anti_score * 0.4 + excl_score * 0.6
+            incl_score = inclusion[n]
+            final_score = incl_score * 0.55 + excl_score * 0.35 + anti_score * 0.10
             if n in thao_luan_signal:
                 final_score += 0.4
             scores[n] = final_score
