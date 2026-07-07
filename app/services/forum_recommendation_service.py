@@ -560,111 +560,47 @@ def _de_top4_anti_consensus(
     """
     Anti-consensus đề top 4:
 
+    - Source constraint: only accept non-dàn đề picks from khu Thảo luận (thao_luan)
     - Prefer numbers picked by high-performance experts (measured win-rate via Wilson + ramp)
-    - Exclude numbers picked by the crowd, unless they have strong high-perf support
-    - Use exclusion signal from dàn (numbers that many strong experts exclude)
+    - Exclude numbers picked by the crowd (within Thảo luận)
     """
 
     # Requirement: đề top 4 candidates must come from khu Thảo luận only.
-    # Still track crowd popularity in both Thảo luận + Chăn nuôi for filtering.
     TL_FORUM = "thao_luan"
-    CROWD_FORUMS = frozenset({"thao_luan", "chan_nuoi"})
 
     # Step 1: Build consensus + exclusion scores
     all_nums = [str(i).zfill(2) for i in range(100)]
     consensus = {n: 0 for n in all_nums}        # count of users who HAVE this number
-    exclusion = {n: 0.0 for n in all_nums}       # total weight of users who EXCLUDE this number
     inclusion = {n: 0.0 for n in all_nums}       # perf-weighted support of users who INCLUDE this number
     hi_perf_votes = {n: 0 for n in all_nums}     # count of high-perf users who include this number
     thao_luan_signal: set[str] = set()            # numbers picked in thao_luan forum (strong signal)
-    # Track popularity inside crowd forums (TL/CN) to filter "đám đông".
-    cn_user_counts: dict[str, set[str]] = {n: set() for n in all_nums}
     tl_user_counts: dict[str, set[str]] = {n: set() for n in all_nums}
-
-    for row in dan_board or []:
-        user = row["user"]
-        forum_kind = row.get("forum") or TL_FORUM
-        # Only accept TL as a positive signal; CN is only used for crowd filtering.
-        if forum_kind and forum_kind not in CROWD_FORUMS:
-            continue
-        nums = set(str(n).zfill(2) for n in (row.get("numbers") or []))
-        dan_size = len(nums)
-        if dan_size <= 0 or dan_size >= 100:
-            continue  # skip invalid dans
-
-        # For đề top4 we treat performance as the primary signal, independent of manual weights.
-        pt = row.get("pick_type", "dan_de")
-        pw = float(ctx.perf_w(user, pt))
-        excluded_count = 100 - dan_size
-        if excluded_count <= 0:
-            continue
-
-        excl_weight_per_num = pw / excluded_count
-
-        for n in range(100):
-            num = str(n).zfill(2)
-            if num in nums:
-                if forum_kind == TL_FORUM:
-                    consensus[num] += 1
-                    inclusion[num] += pw
-                    if pw >= 0.5:
-                        hi_perf_votes[num] += 1
-                    thao_luan_signal.add(num)
-                    tl_user_counts[num].add(user)
-                elif forum_kind == "chan_nuoi":
-                    cn_user_counts[num].add(user)
-            else:
-                exclusion[num] += excl_weight_per_num
 
     # Also process picks (btd and other de types)
     for p in picks:
         pt = p.get("pick_type", "")
         user = p["username"]
         forum_kind = p.get("forum") or TL_FORUM
-        if forum_kind and forum_kind not in CROWD_FORUMS:
+        if forum_kind != TL_FORUM:
             continue
 
+        # Explicitly ignore dàn đề pick types for đề top 4.
         if pt in DAN_PICK_TYPES:
-            nums = set(str(n).zfill(2) for n in (p.get("numbers") or []))
-            dan_size = len(nums)
-            if dan_size <= 0 or dan_size >= 100:
-                continue
-            pw = float(ctx.perf_w(user, pt if pt != "dan_de" else "dan_de"))
-            excluded_count = 100 - dan_size
-            if excluded_count <= 0:
-                continue
-            excl_weight_per_num = pw / excluded_count
-            for n in range(100):
-                num = str(n).zfill(2)
-                if num in nums:
-                    if forum_kind == TL_FORUM:
-                        consensus[num] += 1
-                        inclusion[num] += pw
-                        if pw >= 0.5:
-                            hi_perf_votes[num] += 1
-                        thao_luan_signal.add(num)
-                        tl_user_counts[num].add(user)
-                    elif forum_kind == "chan_nuoi":
-                        cn_user_counts[num].add(user)
-                else:
-                    exclusion[num] += excl_weight_per_num
+            continue
 
-        elif pt == "btd":
+        if pt == "btd":
             # BTD: strong signal — bump consensus + track thao_luan
             raw_nums = p.get("numbers") or []
             pw = float(ctx.perf_w(user, "btd"))
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
-                    if forum_kind == TL_FORUM:
-                        consensus[n] += 1
-                        inclusion[n] += pw
-                        if pw >= 0.5:
-                            hi_perf_votes[n] += 1
-                        thao_luan_signal.add(n)
-                        tl_user_counts[n].add(user)
-                    elif forum_kind == "chan_nuoi":
-                        cn_user_counts[n].add(user)
+                    consensus[n] += 1
+                    inclusion[n] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[n] += 1
+                    thao_luan_signal.add(n)
+                    tl_user_counts[n].add(user)
 
         elif pt in frozenset({"de_dau", "de_tong", "btd_dau", "btd_de"}):
             # Single digits (0-9) or 2-digit numbers.
@@ -673,15 +609,12 @@ def _de_top4_anti_consensus(
             for d in raw_nums:
                 n = _norm_de(d)
                 if n in consensus:
-                    if forum_kind == TL_FORUM:
-                        consensus[n] += 1
-                        inclusion[n] += pw
-                        if pw >= 0.5:
-                            hi_perf_votes[n] += 1
-                        thao_luan_signal.add(n)
-                        tl_user_counts[n].add(user)
-                    elif forum_kind == "chan_nuoi":
-                        cn_user_counts[n].add(user)
+                    consensus[n] += 1
+                    inclusion[n] += pw
+                    if pw >= 0.5:
+                        hi_perf_votes[n] += 1
+                    thao_luan_signal.add(n)
+                    tl_user_counts[n].add(user)
 
         elif pt == "std_de":
             # std_de: numbers come as pairs like "39-79", "14-41"
@@ -692,45 +625,17 @@ def _de_top4_anti_consensus(
                 for part in parts:
                     n = _norm_de(part.strip())
                     if n in consensus:
-                        if forum_kind == TL_FORUM:
-                            consensus[n] += 1
-                            inclusion[n] += pw
-                            if pw >= 0.5:
-                                hi_perf_votes[n] += 1
-                            thao_luan_signal.add(n)
-                            tl_user_counts[n].add(user)
-                        elif forum_kind == "chan_nuoi":
-                            cn_user_counts[n].add(user)
-
-    # Process forum dan_board (same exclusion logic)
-    for row in forum.get("dan_board") or []:
-        user = row.get("user", "")
-        if not user:
-            continue
-        nums = set(str(n).zfill(2) for n in (row.get("numbers") or []))
-        dan_size = len(nums)
-        if dan_size <= 0 or dan_size >= 100:
-            continue
-        pw = float(ctx.perf_w(user, "dan_de"))
-        excluded_count = 100 - dan_size
-        if excluded_count <= 0:
-            continue
-        excl_weight_per_num = pw / excluded_count
-        for n in range(100):
-            num = str(n).zfill(2)
-            if num in nums:
-                consensus[num] += 1
-                inclusion[num] += pw
-                if pw >= 0.5:
-                    hi_perf_votes[num] += 1
-            else:
-                exclusion[num] += excl_weight_per_num
+                        consensus[n] += 1
+                        inclusion[n] += pw
+                        if pw >= 0.5:
+                            hi_perf_votes[n] += 1
+                        thao_luan_signal.add(n)
+                        tl_user_counts[n].add(user)
 
     # Step 2: Dynamic threshold
     anti_threshold = _anti_threshold(consensus)
-    cn_votes = {n: len(cn_user_counts[n]) for n in all_nums}
     tl_votes = {n: len(tl_user_counts[n]) for n in all_nums}
-    crowd_votes = {n: cn_votes[n] + tl_votes[n] for n in all_nums}
+    crowd_votes = tl_votes
     crowd_nonzero = sorted(v for v in crowd_votes.values() if v > 0)
     crowd_threshold = 3
     if crowd_nonzero:
@@ -753,11 +658,10 @@ def _de_top4_anti_consensus(
                 continue  # too popular — anti-consensus rule
 
         anti_score = 1.0 / (1.0 + consensus[n])     # inverse of popularity
-        excl_score = exclusion[n]                     # weight of users who exclude it
         incl_score = inclusion[n]                     # perf-weighted support
 
-        # Prefer numbers chosen by high-performance experts, then exclusion, then anti-popularity.
-        final_score = incl_score * 0.55 + excl_score * 0.35 + anti_score * 0.10
+        # Prefer numbers chosen by high-performance experts, then anti-popularity.
+        final_score = incl_score * 0.85 + anti_score * 0.15
 
         # Bonus for thao_luan signal: số được thảo luận chốt có tín hiệu mạnh hơn
         if n in thao_luan_signal:
@@ -778,9 +682,8 @@ def _de_top4_anti_consensus(
                 if n not in thao_luan_signal and hi_perf_votes[n] < 2:
                     continue
             anti_score = 1.0 / (1.0 + consensus[n])
-            excl_score = exclusion[n]
             incl_score = inclusion[n]
-            final_score = incl_score * 0.55 + excl_score * 0.35 + anti_score * 0.10
+            final_score = incl_score * 0.85 + anti_score * 0.15
             if n in thao_luan_signal:
                 final_score += 0.4
             scores[n] = final_score

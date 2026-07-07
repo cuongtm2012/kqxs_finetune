@@ -29,17 +29,12 @@ def test_consensus_loto_counts_users_not_weights():
 
 def test_anti_consensus_de_returns_four_numbers():
     picks = [
-        _pick("u1", "dan_de", ["01", "05", "11"]),
-        _pick("u2", "dan_de", ["01", "05", "30"]),
-        _pick("u3", "dan_36s", ["05", "11", "30"]),
-    ]
-    dan_board = [
-        {"user": "u1", "numbers": ["01", "05", "11"]},
-        {"user": "u2", "numbers": ["01", "05", "30"]},
-        {"user": "u3", "numbers": ["05", "11", "30"]},
+        {"username": "u1", "pick_type": "btd", "numbers": ["01"], "forum": "thao_luan"},
+        {"username": "u2", "pick_type": "btd_de", "numbers": ["05", "11"], "forum": "thao_luan"},
+        {"username": "u3", "pick_type": "std_de", "numbers": ["30-31"], "forum": "thao_luan"},
     ]
     ctx = resolve_scoring_context("weight")
-    top4 = _de_top4_anti_consensus(picks, {}, dan_board, ctx)
+    top4 = _de_top4_anti_consensus(picks, {}, [], ctx)
     assert len(top4) == 4
     assert all(len(n) == 2 for n in top4)
 
